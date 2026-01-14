@@ -1,0 +1,19 @@
+[project]
+name = "modern-llm"
+version = "0.1.0"
+description = "350M LLM with RoPE, mHC, and GRPO"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.2.0",
+    "numpy>=1.24.0",
+    "transformers>=4.36.0",
+    "datasets>=2.16.0",
+    "tokenizers>=0.15.0",
+    "wandb>=0.16.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+    "einops>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "black>=23.0.0", "ruff>=0.1.0"]
