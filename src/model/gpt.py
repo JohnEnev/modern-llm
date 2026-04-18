@@ -85,94 +85,94 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-        def forward(
-                self,
-                input_ids: torch.Tensor,
-                targets: torch.Tensor = None
-        ) -> tuple[torch.Tensor, torch.Tensor | None]:
-            """
-            Forward pass through the model.
-            
-            Args:
-                input_ids: Token IDs [batch, seq_len]
-                targets: Target token IDs [batch, seq_len] (optional, for training)
-            
-            Returns:
-                logits: Output logits [batch, seq_len, vocab_size]
-                loss: Cross-entropy loss (if targets provided), else None
-            """
-            # Step 1 - Get token embeddings
-            x = self.token_embeddings(input_ids) # [batch, seq_len, d_model]
-
-            # Step 2 - Apply dropout to embeddings, if specified
-            if self.emb_dropout is not None:
-                x = self.emb_dropout(x) # [batch, seq_len, d_model]
-
-            # Step 3 - Pass through transformer blocks
-            for block in self.blocks:
-                x = block(x) # [batch, seq_len, d_model]
-
-            # Step 4 - Final RMSNorm
-            x = self.norm(x) # [batch, seq_len, d_model]
-
-            # Step 5 - Language modeling head to get logits
-            logits = self.lm_head(x) # [batch, seq_len, vocab_size]
-
-            # Step 6 - If targets provided, compute cross-entropy loss
-            loss = None
-            if targets is not None:
-                # Flatten for cross-entropy
-                # logits: [batch*seq_len, vocab_size], targets: [batch*seq_len]
-                loss = F.cross_entropy(
-                    logits.view(-1, self.config.vocab_size),
-                    targets.view(-1),
-                    ignore_index=-1 # Ignore padding tokens if any
-                )
-
-            return logits, loss
-        
-        @torch.no_grad()
-        def generate(
+    def forward(
             self,
             input_ids: torch.Tensor,
-            max_new_tokens: int,
-            temperature: float = 1.0,
-            top_k: int | None = None
-        ) -> torch.Tensor:
-            """
-            Generate new tokens autoregressively.
-            
-            Args:
-                input_ids: Starting tokens [batch, seq_len]
-                max_new_tokens: Number of tokens to generate
-                temperature: Sampling temperature (higher = more random)
-                top_k: If set, only sample from top k tokens
-            
-            Returns:
-                Generated sequence [batch, seq_len + max_new_tokens]
-            """
-            self.eval() # Set to eval mode for generation (disables dropout)
-            for _ in range(max_new_tokens):
-                # Crop input_ids if longer than max_seq_len
-                input_ids_crop = input_ids[:, -self.config.max_seq_len:]
-                # Get logits for current input
-                logits, _ = self(input_ids_crop) # [batch, seq_len_crop, vocab_size]
-                # We only care about the last token's logits for sampling
-                logits = logits[:, -1, :]  # [batch, vocab_size]
-                # Apply temperature
-                if temperature != 1.0:
-                    logits = logits / temperature
-                # Apply top-k filtering if specified
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, -1, None]] = -float('inf')
+            targets: torch.Tensor = None
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """
+        Forward pass through the model.
+        
+        Args:
+            input_ids: Token IDs [batch, seq_len]
+            targets: Target token IDs [batch, seq_len] (optional, for training)
+        
+        Returns:
+            logits: Output logits [batch, seq_len, vocab_size]
+            loss: Cross-entropy loss (if targets provided), else None
+        """
+        # Step 1 - Get token embeddings
+        x = self.token_embeddings(input_ids) # [batch, seq_len, d_model]
 
-                # Sample from the distribution
-                probs = F.softmax(logits, dim=-1) # [batch, vocab_size]
-                next_token = torch.multinomial(probs, num_samples=1) # [batch, 1]
-                # Append to input_ids
-                input_ids = torch.cat([input_ids, next_token], dim=-1) # [batch, seq_len + 1]
-            return input_ids
+        # Step 2 - Apply dropout to embeddings, if specified
+        if self.emb_dropout is not None:
+            x = self.emb_dropout(x) # [batch, seq_len, d_model]
+
+        # Step 3 - Pass through transformer blocks
+        for block in self.blocks:
+            x = block(x) # [batch, seq_len, d_model]
+
+        # Step 4 - Final RMSNorm
+        x = self.norm(x) # [batch, seq_len, d_model]
+
+        # Step 5 - Language modeling head to get logits
+        logits = self.lm_head(x) # [batch, seq_len, vocab_size]
+
+        # Step 6 - If targets provided, compute cross-entropy loss
+        loss = None
+        if targets is not None:
+            # Flatten for cross-entropy
+            # logits: [batch*seq_len, vocab_size], targets: [batch*seq_len]
+            loss = F.cross_entropy(
+                logits.view(-1, self.config.vocab_size),
+                targets.view(-1),
+                ignore_index=-1 # Ignore padding tokens if any
+            )
+
+        return logits, loss
+    
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None
+    ) -> torch.Tensor:
+        """
+        Generate new tokens autoregressively.
+        
+        Args:
+            input_ids: Starting tokens [batch, seq_len]
+            max_new_tokens: Number of tokens to generate
+            temperature: Sampling temperature (higher = more random)
+            top_k: If set, only sample from top k tokens
+        
+        Returns:
+            Generated sequence [batch, seq_len + max_new_tokens]
+        """
+        self.eval() # Set to eval mode for generation (disables dropout)
+        for _ in range(max_new_tokens):
+            # Crop input_ids if longer than max_seq_len
+            input_ids_crop = input_ids[:, -self.config.max_seq_len:]
+            # Get logits for current input
+            logits, _ = self(input_ids_crop) # [batch, seq_len_crop, vocab_size]
+            # We only care about the last token's logits for sampling
+            logits = logits[:, -1, :]  # [batch, vocab_size]
+            # Apply temperature
+            if temperature != 1.0:
+                logits = logits / temperature
+            # Apply top-k filtering if specified
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('inf')
+
+            # Sample from the distribution
+            probs = F.softmax(logits, dim=-1) # [batch, vocab_size]
+            next_token = torch.multinomial(probs, num_samples=1) # [batch, 1]
+            # Append to input_ids
+            input_ids = torch.cat([input_ids, next_token], dim=-1) # [batch, seq_len + 1]
+        return input_ids
         
 
     
@@ -184,7 +184,7 @@ class GPT(nn.Module):
         counts = {
             'embeddings': count_params(self.token_embeddings),
             'blocks': sum(count_params(block) for block in self.blocks),
-            'final_norm': count_params(self.final_norm),
+            'final_norm': count_params(self.norm),
             'lm_head': 0 if self.config.tie_weights else count_params(self.lm_head),
             'total': sum(p.numel() for p in self.parameters())
         }
