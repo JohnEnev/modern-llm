@@ -48,7 +48,7 @@ class TransformerBlock(nn.Module):
         # First path through attention: residual connection + attention of normed input
         x = x + self.attention(self.norm1(x))
         # Second path through MLP: residual connection + SwiGLU of normed output of first path
-        x = x + self.mlp(self.norm2(x))\
+        x = x + self.mlp(self.norm2(x))
         
         return x
 

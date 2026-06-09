@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from rope import apply_rope, RoPECache
+from .rope import apply_rope, RoPECache
 
 class MultiHeadAttention(nn.Module):
     """
