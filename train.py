@@ -15,6 +15,13 @@ from src.data.dataset import PretrainDataset
 
 torch.set_float32_matmul_precision('high') # for torch optimization
 
+# Logging through WandB
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
 @dataclass
 class TrainConfig:
     # Data
@@ -174,7 +181,6 @@ def train(config: TrainConfig):
     device = config.device
     dtype = torch.bfloat16
     enc = tiktoken.get_encoding("gpt2")
-    val_dataset = PretrainDataset(config.val_dir, config.seq_len)
 
     # Model creation, using default GPTConfig for now
     model_config = GPTConfig()
@@ -188,7 +194,7 @@ def train(config: TrainConfig):
     dataset = PretrainDataset(config.data_dir, config.seq_len)
     val_dataset = PretrainDataset(config.val_dir, config.seq_len)
     print(f"✓ Data loaded: {len(dataset):,} train chunks, {len(val_dataset):,} val chunks")
-    
+
     dataloader = DataLoader(
         dataset,
         batch_size=config.micro_batch_size,
@@ -212,6 +218,15 @@ def train(config: TrainConfig):
     print(f"  LR: {config.min_lr} → {config.max_lr} → {config.min_lr}")
     print(f"  Warmup: {config.warmup_steps} steps")
     print()
+
+    if HAS_WANDB:
+        wandb.init(project="llm-350m", config={
+            "max_steps": config.max_steps,
+            "micro_batch_size": config.micro_batch_size,
+            "grad_accum_steps": config.grad_accum_steps,
+            "max_lr": config.max_lr,
+            "seq_len": config.seq_len,
+        })
 
     # Training loop
     model.train()
@@ -268,6 +283,13 @@ def train(config: TrainConfig):
                 f"tok/s {tokens_per_sec:,.0f} | "
                 f"dt {step_time*1000:.0f}ms"
             )
+            if HAS_WANDB:
+                wandb.log({
+                    "train/loss": running_loss,
+                    "train/lr": lr,
+                    "train/grad_norm": grad_norm.item(),
+                    "train/tok_per_sec": tokens_per_sec,
+                }, step=step)
 
         # Checkpointing
         if step > 0 and step % config.save_interval == 0:
@@ -276,11 +298,16 @@ def train(config: TrainConfig):
         if step > 0 and step % config.eval_interval == 0:
             val_loss = evaluate(model, val_dataset, config, device, dtype)
             print(f"  >>> val_loss: {val_loss:.4f}")
+            if HAS_WANDB:
+                wandb.log({"val/loss": val_loss}, step=step)
             for prompt in EVAL_PROMPTS:
                 sample = generate_sample(model, enc, device, prompt=prompt)
                 print(f"  >>> [{prompt}] {sample[:150]}")
                 # Go back to train mode
             model.train()
+
+    if HAS_WANDB:
+        wandb.finish()
 
 
     
