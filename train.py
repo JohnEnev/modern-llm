@@ -310,10 +310,6 @@ def train(config: TrainConfig):
         wandb.finish()
 
 
-    
-
-
-
 if __name__ == "__main__":
     config = TrainConfig()
     train(config)
