@@ -178,7 +178,7 @@ def train(config: TrainConfig):
     # Model creation, using default GPTConfig for now
     model_config = GPTConfig()
     model = GPT(model_config).to(device)
-    #model = torch.compile(model)
+    model = torch.compile(model)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Dataset and dataloader

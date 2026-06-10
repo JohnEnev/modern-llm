@@ -42,24 +42,23 @@ def apply_rope(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         Rotated tensor of same shape as x
     """
     
-    # Step 1: Reshape to treat pairs as complex numbers
-    # [batch, seq_len, n_heads, d_k] -> [batch, seq_len, n_heads, d_k//2, 2]
-    x_complex = x.float().reshape(*x.shape[:-1], -1, 2)
+    # Info: used complex numbers in past bu torch.compile() would fail. Now using real values
+    # freqs are still complex, but we extract sin/cos
 
-    # Step 2: Convert to complex representation
-    x_complex = torch.view_as_complex(x_complex) # [batch, seq_len, n_heads, d_k//2, 2]
-
-    # Step 3: Broadcast freqs and multiply
-    # freqs: [seq_len, d_k//2] -> [1, seq_len, 1, d_k//2]
     freqs = freqs.to(x.device)
-    freqs = freqs.unsqueeze(0).unsqueeze(2)
-    rotated = x_complex * freqs # [batch, seq_len, n_heads, d_k//2, 2]
+    cos_f = freqs.real.unsqueeze(0).unsqueeze(2)  # [1, seq, 1, d_k//2]
+    sin_f = freqs.imag.unsqueeze(0).unsqueeze(2)  # [1, seq, 1, d_k//2]
 
-    # Step 4: Convert back to real and flatten
-    rotated_real = torch.view_as_real(rotated) # [batch, seq_len, n_heads, d_k//2, 2]
-    rotated_real = rotated_real.flatten(-2) # [batch, seq_len, n_heads, d_k]
-    
-    return rotated_real.type_as(x)
+    # Split x into even/odd pairs
+    x1 = x[..., 0::2]  # [batch, seq, heads, d_k//2]
+    x2 = x[..., 1::2]  # [batch, seq, heads, d_k//2]
+
+    # Apply rotation using real arithmetic
+    out1 = x1 * cos_f - x2 * sin_f
+    out2 = x1 * sin_f + x2 * cos_f
+
+    # Interleave back
+    return torch.stack([out1, out2], dim=-1).flatten(-2)
 
 class RoPECache:
     """Cache for precomputed RoPE frquencies."""
