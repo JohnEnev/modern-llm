@@ -41,7 +41,7 @@ def prepare_fineweb_edu(
 
     for doc in dataset:
         # Tokenize document and append end-of-text separator
-        tokenised_doc = enc.encode(doc["text"])
+        tokenised_doc = enc.encode(doc["text"], disallowed_special=()) # make sure special tokens are encoded as plain text
         buffer.extend(tokenised_doc)
         buffer.append(eot)
         total_tokens += len(tokenised_doc) + 1  # +1 for eot
