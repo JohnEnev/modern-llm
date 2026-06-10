@@ -13,6 +13,7 @@ import tiktoken
 from src.model.gpt import GPT, GPTConfig
 from src.data.dataset import PretrainDataset
 
+torch.set_float32_matmul_precision('high') # for torch optimization
 
 @dataclass
 class TrainConfig:
@@ -178,11 +179,16 @@ def train(config: TrainConfig):
     # Model creation, using default GPTConfig for now
     model_config = GPTConfig()
     model = GPT(model_config).to(device)
-    model = torch.compile(model)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print("Compiling model...")
+    model = torch.compile(model)
+    print("✓ Model compiled")
 
     # Dataset and dataloader
     dataset = PretrainDataset(config.data_dir, config.seq_len)
+    val_dataset = PretrainDataset(config.val_dir, config.seq_len)
+    print(f"✓ Data loaded: {len(dataset):,} train chunks, {len(val_dataset):,} val chunks")
+    
     dataloader = DataLoader(
         dataset,
         batch_size=config.micro_batch_size,
@@ -200,6 +206,12 @@ def train(config: TrainConfig):
         weight_decay=config.weight_decay,
         betas=(0.9, 0.95),
     )
+    print(f"✓ Optimizer ready")
+    print(f"\nStarting training for {config.max_steps} steps...")
+    print(f"  Effective batch: {config.micro_batch_size * config.grad_accum_steps * config.seq_len:,} tokens/step")
+    print(f"  LR: {config.min_lr} → {config.max_lr} → {config.min_lr}")
+    print(f"  Warmup: {config.warmup_steps} steps")
+    print()
 
     # Training loop
     model.train()
