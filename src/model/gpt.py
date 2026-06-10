@@ -8,7 +8,7 @@ class GPTConfig:
     """Configuration for GPT model"""
     def __init__(
             self,
-            vocab_size: int = 32768,
+            vocab_size: int = 50304,
             d_model: int = 1024,
             n_layers: int = 24,
             n_heads: int = 16,
