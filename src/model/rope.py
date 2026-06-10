@@ -51,6 +51,7 @@ def apply_rope(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
 
     # Step 3: Broadcast freqs and multiply
     # freqs: [seq_len, d_k//2] -> [1, seq_len, 1, d_k//2]
+    freqs = freqs.to(x.device)
     freqs = freqs.unsqueeze(0).unsqueeze(2)
     rotated = x_complex * freqs # [batch, seq_len, n_heads, d_k//2, 2]
 
