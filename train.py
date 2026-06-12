@@ -4,6 +4,7 @@
 import os
 import time
 import math
+import glob
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
@@ -90,6 +91,12 @@ def save_checkpoint(model, optimizer, step, config):
     torch.save(checkpoint, path)
     print(f"  >>> Saved checkpoint: {path}")
 
+def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
+    """Find the most recent checkpoint in the directory."""
+    checkpoints = glob.glob(os.path.join(checkpoint_dir, "step_*.pt"))
+    if not checkpoints:
+        return None
+    return max(checkpoints)  # max on filename works since they're zero-padded
 
 def load_checkpoint(path, model, optimizer):
     """Resume training from a checkpoint."""
@@ -212,12 +219,28 @@ def train(config: TrainConfig):
         weight_decay=config.weight_decay,
         betas=(0.9, 0.95),
     )
+
+
     print(f"✓ Optimizer ready")
     print(f"\nStarting training for {config.max_steps} steps...")
     print(f"  Effective batch: {config.micro_batch_size * config.grad_accum_steps * config.seq_len:,} tokens/step")
     print(f"  LR: {config.min_lr} → {config.max_lr} → {config.min_lr}")
     print(f"  Warmup: {config.warmup_steps} steps")
     print()
+
+    # Resume from latest checkpoint if available
+    start_step = 0
+    latest_ckpt = find_latest_checkpoint(config.checkpoint_dir)
+    if latest_ckpt:
+        checkpoint = torch.load(latest_ckpt, weights_only=False)
+        model.load_state_dict(checkpoint["model_weights"])
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        start_step = checkpoint["step"]
+        torch.random.set_rng_state(checkpoint["rng_state"])
+        torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+        print(f"✓ Resumed from {latest_ckpt} (step {start_step})")
+    else:
+        print("✓ Starting fresh training")
 
     if HAS_WANDB:
         wandb.init(project="llm-350m", config={
@@ -230,7 +253,7 @@ def train(config: TrainConfig):
 
     # Training loop
     model.train()
-    for step in range(config.max_steps):
+    for step in range(start_step, config.max_steps):
         t_start = time.time()
 
         # Get the learning rate for the specific step
