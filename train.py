@@ -13,6 +13,7 @@ import tiktoken
 
 from src.model.gpt import GPT, GPTConfig
 from src.data.dataset import PretrainDataset
+from src.optim.muon import configure_optimizers
 
 torch.set_float32_matmul_precision('high') # for torch optimization
 
@@ -212,14 +213,21 @@ def train(config: TrainConfig):
     )
     train_iter = iter(dataloader)
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.max_lr,
-        weight_decay=config.weight_decay,
-        betas=(0.9, 0.95),
-    )
+    # Optimizer - old single AdamW
+    #optimizer = torch.optim.AdamW(
+    #    model.parameters(),
+    #    lr=config.max_lr,
+    #    weight_decay=config.weight_decay,
+    #    betas=(0.9, 0.95),
+    #)
 
+    # Optimizers
+    muon_optimizer, adamw_optimizer = configure_optimizers(
+        model,
+        lr=config.max_lr,
+        muon_lr=config.max_lr * 0.5,
+        weight_decay=config.weight_decay,
+    )
 
     print(f"✓ Optimizer ready")
     print(f"\nStarting training for {config.max_steps} steps...")
@@ -258,11 +266,12 @@ def train(config: TrainConfig):
 
         # Get the learning rate for the specific step
         lr = get_lr(step, config.warmup_steps, config.max_steps, config.max_lr, config.min_lr)
-        for param_group in optimizer.param_groups:
+        for param_group in adamw_optimizer.param_groups:
             param_group["lr"] = lr
 
         # Zero gradients
-        optimizer.zero_grad()
+        muon_optimizer.zero_grad()
+        adamw_optimizer.zero_grad()
 
         # Gradient accumulation loop (micro-steps)
         running_loss = 0.0
@@ -289,8 +298,10 @@ def train(config: TrainConfig):
         # Clip gradients
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
 
-        # Optimizer step
-        optimizer.step()
+        # Optimizers step
+        muon_optimizer.step()
+        adamw_optimizer.step()
+
 
         # Timing
         step_time = time.time() - t_start
@@ -328,6 +339,10 @@ def train(config: TrainConfig):
                 print(f"  >>> [{prompt}] {sample[:150]}")
                 # Go back to train mode
             model.train()
+
+    # Final checkpoint saved        
+    save_checkpoint(model, optimizer, config.max_steps, config)
+    print("✓ Final checkpoint saved")
 
     if HAS_WANDB:
         wandb.finish()

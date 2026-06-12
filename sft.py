@@ -26,7 +26,7 @@ class SFTConfig:
     base_checkpoint: str = "checkpoints/step_020000.pt"
     
     # Output
-    checkpoint_dir: str = "checkpoints_sft"
+    checkpoint_dir: str = "/workspace/checkpoints_sft"
     
     # Data — mix of general, math, code
     # Ratios: 60% OpenHermes, 30% MetaMath, 10% CodeAlpaca
@@ -113,13 +113,21 @@ def sft_train(config: SFTConfig):
     model_config = GPTConfig()
     model = GPT(model_config).to(device)
     
-    print(f"Loading base model from {config.base_checkpoint}...")
-    checkpoint = torch.load(config.base_checkpoint, weights_only=False)
-    state_dict = checkpoint["model_weights"]
-    # Strip torch.compile prefix if present
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(state_dict)
-    print("✓ Base model loaded")
+    resume_path = "/workspace/sft_step_005000.pt"
+    if os.path.exists(resume_path):
+        print(f"Resuming from {resume_path}...")
+        ckpt = torch.load(resume_path, weights_only=False)
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model_weights"].items()}
+        model.load_state_dict(state_dict)
+        start_step = ckpt["step"]
+        print(f"✓ Resumed from step {start_step}")
+    else:
+        print(f"Loading base model from {config.base_checkpoint}...")
+        checkpoint = torch.load(config.base_checkpoint, weights_only=False)
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
+        model.load_state_dict(state_dict)
+        start_step = 0
+        print("✓ Base model loaded")
     
     # Compile for speed
     model = torch.compile(model)
@@ -149,12 +157,16 @@ def sft_train(config: SFTConfig):
         fused=True,
     )
     
+    # Restore optimizer state if resuming
+    if start_step > 0 and "optimizer_state" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        print("✓ Optimizer state restored")
+
     # Training loop
     model.train()
-    step = 0
     train_iter = iter(train_loader)
     
-    for step in range(total_steps):
+    for step in range(start_step, total_steps):
         t_start = time.time()
         
         # LR schedule
