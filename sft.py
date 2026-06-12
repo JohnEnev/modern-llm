@@ -115,7 +115,10 @@ def sft_train(config: SFTConfig):
     
     print(f"Loading base model from {config.base_checkpoint}...")
     checkpoint = torch.load(config.base_checkpoint, weights_only=False)
-    model.load_state_dict(checkpoint["model_weights"])
+    state_dict = checkpoint["model_weights"]
+    # Strip torch.compile prefix if present
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     print("✓ Base model loaded")
     
     # Compile for speed
