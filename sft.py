@@ -36,7 +36,7 @@ class SFTConfig:
     max_seq_len: int = 1024
     batch_size: int = 16
     grad_accum_steps: int = 4      # smaller than pretraining — SFT data is smaller
-    num_epochs: int = 3
+    num_epochs: int = 1
     
     # Optimizer — much lower LR than pretraining
     lr: float = 2e-5              # 15x lower than pretraining max_lr
