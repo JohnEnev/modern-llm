@@ -22,7 +22,14 @@ for prompt in prompts:
     tokens = enc.encode(prompt)
     input_ids = torch.tensor([tokens])
     with torch.no_grad():
-        output = model.generate(input_ids, max_new_tokens=150, temperature=0.7)
-    print(f"\n{prompt}")
-    print(enc.decode(output[0].tolist()[len(tokens):]))
+        output = model.generate(input_ids, max_new_tokens=80, temperature=0.4)
+    
+    # Cut at first EOT token
+    output_tokens = output[0].tolist()[len(tokens):]
+    eot = enc.eot_token
+    if eot in output_tokens:
+        output_tokens = output_tokens[:output_tokens.index(eot)]
+    
+    print(f">>> {prompt}")
+    print(enc.decode(output_tokens))
     print("---")
