@@ -27,7 +27,7 @@ except ImportError:
 @dataclass
 class TrainConfig:
     # Data
-    data_dir: str = "data/fineweb-edu"
+    data_dir: str = "data/fineweb-edu/train"
     seq_len: int = 1024
 
     # Batch size
@@ -39,6 +39,7 @@ class TrainConfig:
     max_lr: float = 3e-4
     min_lr: float = 3e-5             # 10% of max_lr usually
     weight_decay: float = 0.1
+    muon_lr: float = 1.5e-4
     grad_clip: float = 1.0
 
     # Schedule
@@ -78,13 +79,14 @@ def get_lr(step, warmup_steps, max_steps, max_lr, min_lr):
     return (1 + math.cos(math.pi * progress)) * (max_lr - min_lr) / 2 + min_lr
 
 
-def save_checkpoint(model, optimizer, step, config):
+def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config):
     """Save everything needed to resume training."""
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     path = os.path.join(config.checkpoint_dir, f"step_{step:06d}.pt")
     checkpoint = {
         "model_weights": model.state_dict(),
-        "optimizer_state": optimizer.state_dict(),
+        "muon_state": muon_optimizer.state_dict(),
+        "adamw_state": adamw_optimizer.state_dict(),
         "step": step,
         "rng_state": torch.random.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state(),
@@ -99,11 +101,12 @@ def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
         return None
     return max(checkpoints)  # max on filename works since they're zero-padded
 
-def load_checkpoint(path, model, optimizer):
+def load_checkpoint(path, model, muon_optimizer, adamw_optimizer):
     """Resume training from a checkpoint."""
     checkpoint = torch.load(path, weights_only=False)
     model.load_state_dict(checkpoint["model_weights"])
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
+    muon_optimizer.load_state_dict(checkpoint["muon_state"])
+    adamw_optimizer.load_state_dict(checkpoint["adamw_state"])
     torch.random.set_rng_state(checkpoint["rng_state"])
     torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
     print(f"  >>> Resumed from step {checkpoint['step']}")
@@ -225,7 +228,7 @@ def train(config: TrainConfig):
     muon_optimizer, adamw_optimizer = configure_optimizers(
         model,
         lr=config.max_lr,
-        muon_lr=config.max_lr * 0.5,
+        muon_lr=config.muon_lr,
         weight_decay=config.weight_decay,
     )
 
@@ -242,7 +245,8 @@ def train(config: TrainConfig):
     if latest_ckpt:
         checkpoint = torch.load(latest_ckpt, weights_only=False)
         model.load_state_dict(checkpoint["model_weights"])
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        muon_optimizer.load_state_dict(checkpoint["muon_state"])
+        adamw_optimizer.load_state_dict(checkpoint["adamw_state"])
         start_step = checkpoint["step"]
         torch.random.set_rng_state(checkpoint["rng_state"])
         torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
@@ -327,7 +331,7 @@ def train(config: TrainConfig):
 
         # Checkpointing
         if step > 0 and step % config.save_interval == 0:
-            save_checkpoint(model, optimizer, step, config)
+            save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config)
 
         if step > 0 and step % config.eval_interval == 0:
             val_loss = evaluate(model, val_dataset, config, device, dtype)
@@ -341,7 +345,7 @@ def train(config: TrainConfig):
             model.train()
 
     # Final checkpoint saved        
-    save_checkpoint(model, optimizer, config.max_steps, config)
+    save_checkpoint(model, muon_optimizer, adamw_optimizer, config.max_steps, config)
     print("✓ Final checkpoint saved")
 
     if HAS_WANDB:
