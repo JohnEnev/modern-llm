@@ -41,6 +41,7 @@ class TrainConfig:
     weight_decay: float = 0.1
     muon_lr: float = 1.5e-4
     grad_clip: float = 1.0
+    use_muon: bool = True
 
     # Schedule
     warmup_steps: int = 1000
@@ -85,12 +86,13 @@ def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config):
     path = os.path.join(config.checkpoint_dir, f"step_{step:06d}.pt")
     checkpoint = {
         "model_weights": model.state_dict(),
-        "muon_state": muon_optimizer.state_dict(),
         "adamw_state": adamw_optimizer.state_dict(),
         "step": step,
         "rng_state": torch.random.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state(),
     }
+    if muon_optimizer:
+        checkpoint["muon_state"] = muon_optimizer.state_dict()
     torch.save(checkpoint, path)
     print(f"  >>> Saved checkpoint: {path}")
 
@@ -105,7 +107,8 @@ def load_checkpoint(path, model, muon_optimizer, adamw_optimizer):
     """Resume training from a checkpoint."""
     checkpoint = torch.load(path, weights_only=False)
     model.load_state_dict(checkpoint["model_weights"])
-    muon_optimizer.load_state_dict(checkpoint["muon_state"])
+    if muon_optimizer and "muon_state" in checkpoint:
+        muon_optimizer.load_state_dict(checkpoint["muon_state"])
     adamw_optimizer.load_state_dict(checkpoint["adamw_state"])
     torch.random.set_rng_state(checkpoint["rng_state"])
     torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
@@ -216,21 +219,23 @@ def train(config: TrainConfig):
     )
     train_iter = iter(dataloader)
 
-    # Optimizer - old single AdamW
-    #optimizer = torch.optim.AdamW(
-    #    model.parameters(),
-    #    lr=config.max_lr,
-    #    weight_decay=config.weight_decay,
-    #    betas=(0.9, 0.95),
-    #)
-
     # Optimizers
-    muon_optimizer, adamw_optimizer = configure_optimizers(
-        model,
-        lr=config.max_lr,
-        muon_lr=config.muon_lr,
-        weight_decay=config.weight_decay,
-    )
+    if config.use_muon:
+        muon_optimizer, adamw_optimizer = configure_optimizers(
+            model,
+            lr=config.max_lr,
+            muon_lr=config.muon_lr,
+            weight_decay=config.weight_decay,
+        )
+    else:
+        adamw_optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.max_lr,
+            weight_decay=config.weight_decay,
+            betas=(0.9, 0.95),
+            fused=True
+        )
+        muon_optimizer = None
 
     print(f"✓ Optimizer ready")
     print(f"\nStarting training for {config.max_steps} steps...")
@@ -245,7 +250,8 @@ def train(config: TrainConfig):
     if latest_ckpt:
         checkpoint = torch.load(latest_ckpt, weights_only=False)
         model.load_state_dict(checkpoint["model_weights"])
-        muon_optimizer.load_state_dict(checkpoint["muon_state"])
+        if muon_optimizer:
+            muon_optimizer.load_state_dict(checkpoint["muon_state"])
         adamw_optimizer.load_state_dict(checkpoint["adamw_state"])
         start_step = checkpoint["step"]
         torch.random.set_rng_state(checkpoint["rng_state"])
@@ -274,7 +280,8 @@ def train(config: TrainConfig):
             param_group["lr"] = lr
 
         # Zero gradients
-        muon_optimizer.zero_grad()
+        if muon_optimizer:
+            muon_optimizer.zero_grad()
         adamw_optimizer.zero_grad()
 
         # Gradient accumulation loop (micro-steps)
@@ -303,7 +310,8 @@ def train(config: TrainConfig):
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
 
         # Optimizers step
-        muon_optimizer.step()
+        if muon_optimizer:
+            muon_optimizer.step()
         adamw_optimizer.step()
 
 
