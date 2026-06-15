@@ -4,6 +4,7 @@
 import os
 import time
 import math
+import copy
 import glob
 import torch
 import torch.nn.functional as F
@@ -23,6 +24,30 @@ try:
     HAS_WANDB = True
 except ImportError:
     HAS_WANDB = False
+class EMA:
+    """Exponential Moving Average of model weights.
+    Use ema.model for eval and inference, not for training.
+    """
+    def __init__(self, model: torch.nn.Module, decay: float = 0.9995):
+        self.decay = decay
+        self.model = copy.deepcopy(model)
+        
+        self.model.eval()
+        for param in self.model.parameters():
+            param.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module):
+        for ema_param, train_param in zip(self.model.parameters(), model.parameters()):
+            # EMA high level is ema_param = decay * ema_param + (1 - decay) * train_param
+            # Doing this in line for memory optimization
+            ema_param.data.mul_(self.decay).add_(train_param.data, alpha=1 - self.decay)
+
+    def state_dict(self):
+        return self.model.state_dict()
+
+    def load_state_dict(self, state_dict):
+        self.model.load_state_dict(state_dict)
 
 @dataclass
 class TrainConfig:
@@ -42,6 +67,10 @@ class TrainConfig:
     muon_lr: float = 1.5e-4
     grad_clip: float = 1.0
     use_muon: bool = True
+
+    # EMA
+    use_ema: bool = True
+    ema_decay: float = 0.9995
 
     # Schedule
     warmup_steps: int = 1000
@@ -80,7 +109,7 @@ def get_lr(step, warmup_steps, max_steps, max_lr, min_lr):
     return (1 + math.cos(math.pi * progress)) * (max_lr - min_lr) / 2 + min_lr
 
 
-def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config):
+def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=None):
     """Save everything needed to resume training."""
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     path = os.path.join(config.checkpoint_dir, f"step_{step:06d}.pt")
@@ -93,6 +122,8 @@ def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config):
     }
     if muon_optimizer:
         checkpoint["muon_state"] = muon_optimizer.state_dict()
+    if ema:
+        checkpoint["ema"] = ema.state_dict()
     torch.save(checkpoint, path)
     print(f"  >>> Saved checkpoint: {path}")
 
@@ -204,6 +235,9 @@ def train(config: TrainConfig):
     model = torch.compile(model)
     print("✓ Model compiled")
 
+    # EMA
+    ema = EMA(model, decay=config.ema_decay) if config.use_ema else None
+
     # Dataset and dataloader
     dataset = PretrainDataset(config.data_dir, config.seq_len)
     val_dataset = PretrainDataset(config.val_dir, config.seq_len)
@@ -253,6 +287,8 @@ def train(config: TrainConfig):
         if muon_optimizer:
             muon_optimizer.load_state_dict(checkpoint["muon_state"])
         adamw_optimizer.load_state_dict(checkpoint["adamw_state"])
+        if ema and "ema" in checkpoint:
+            ema.load_state_dict(checkpoint["ema"])
         start_step = checkpoint["step"]
         torch.random.set_rng_state(checkpoint["rng_state"])
         torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
@@ -314,6 +350,10 @@ def train(config: TrainConfig):
             muon_optimizer.step()
         adamw_optimizer.step()
 
+        # EMA update
+        if ema:
+            ema.update(model)
+
 
         # Timing
         step_time = time.time() - t_start
@@ -339,21 +379,22 @@ def train(config: TrainConfig):
 
         # Checkpointing
         if step > 0 and step % config.save_interval == 0:
-            save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config)
+            save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=ema)
 
         if step > 0 and step % config.eval_interval == 0:
-            val_loss = evaluate(model, val_dataset, config, device, dtype)
+            eval_model = ema.model if ema else model
+            val_loss = evaluate(eval_model, val_dataset, config, device, dtype)
             print(f"  >>> val_loss: {val_loss:.4f}")
             if HAS_WANDB:
                 wandb.log({"val/loss": val_loss}, step=step)
             for prompt in EVAL_PROMPTS:
-                sample = generate_sample(model, enc, device, prompt=prompt)
+                sample = generate_sample(eval_model, enc, device, prompt=prompt)
                 print(f"  >>> [{prompt}] {sample[:150]}")
                 # Go back to train mode
             model.train()
 
     # Final checkpoint saved        
-    save_checkpoint(model, muon_optimizer, adamw_optimizer, config.max_steps, config)
+    save_checkpoint(model, muon_optimizer, adamw_optimizer, config.max_steps, config, ema=ema)
     print("✓ Final checkpoint saved")
 
     if HAS_WANDB:
