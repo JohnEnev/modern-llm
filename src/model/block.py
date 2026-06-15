@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .attention import MultiHeadAttention
+from .attention import MultiHeadAttention, DifferentialAttention
 from .rmsnorm import RMSNorm
 from .swiglu import SwiGLU
 
@@ -17,24 +17,37 @@ class TransformerBlock(nn.Module):
             d_model: int,
             n_heads: int,
             n_kv_heads: int = None,
+            layer_idx:int = 0,
             dropout: float = 0.0,
             max_seq_len: int = 2048,
             use_flash: bool = True,
-            use_qk_norm: bool = True
+            use_qk_norm: bool = True,
+            use_diff_attn=True
     ):
         super().__init__()
         # Pre-Attention Normalization
         self.norm1 = RMSNorm(d_model)
-        # Multi-Head Attention
-        self.attention = MultiHeadAttention(
+        # Multi-Head Attention or Differential Attention
+        if use_diff_attn:
+            self.attention = DifferentialAttention(
             d_model=d_model, 
             n_heads=n_heads,
             n_kv_heads=n_kv_heads,
+            layer_idx=layer_idx,
             dropout=dropout,
             max_seq_len=max_seq_len,
-            use_flash=use_flash,
             use_qk_norm=use_qk_norm,
-        )
+            )
+        else:
+            self.attention = MultiHeadAttention(
+                d_model=d_model, 
+                n_heads=n_heads,
+                n_kv_heads=n_kv_heads,
+                dropout=dropout,
+                max_seq_len=max_seq_len,
+                use_flash=use_flash,
+                use_qk_norm=use_qk_norm,
+            )
         # Pre-MLP Normalization
         self.norm2 = RMSNorm(d_model)
         # SwiGLU MLP

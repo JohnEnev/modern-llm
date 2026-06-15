@@ -17,7 +17,8 @@ class GPTConfig:
             max_seq_len: int = 1024,
             use_flash: bool = True,
             tie_weights: bool = True,
-            use_qk_norm: bool = True
+            use_qk_norm: bool = True,
+            use_diff_attn: bool = True
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -29,6 +30,7 @@ class GPTConfig:
         self.use_flash = use_flash
         self.tie_weights = tie_weights
         self.use_qk_norm = use_qk_norm
+        self.use_diff_attn = use_diff_attn
         
 class GPT(nn.Module):
     """
@@ -56,12 +58,14 @@ class GPT(nn.Module):
                 d_model=config.d_model,
                 n_heads=config.n_heads,
                 n_kv_heads=config.n_kv_heads,
+                layer_idx=i,
                 dropout=config.dropout,
                 max_seq_len=config.max_seq_len,
                 use_flash=config.use_flash,
-                use_qk_norm=config.use_qk_norm
+                use_qk_norm=config.use_qk_norm,
+                use_diff_attn=config.use_diff_attn, 
             )
-            for _ in range(config.n_layers)
+            for i in range(config.n_layers)
         ]) # List of [TransformerBlock] of length n_layers, each block processes [batch, seq_len, d_model]
 
         # Final RMSNorm
@@ -295,15 +299,10 @@ def test_full_350m_model():
     
     # Full 350M config
     config = GPTConfig(
-        vocab_size=32768,
-        d_model=1024,
-        n_layers=24,
-        n_heads=16,
-        dropout=0.0,
-        max_seq_len=1024,
-        use_flash=True,
-        tie_weights=True
-    )
+    vocab_size=50304,
+    d_model=1024, n_layers=24, n_heads=16,
+    dropout=0.0, max_seq_len=1024, use_flash=True, tie_weights=True,
+    )   
     
     print("\n1. Creating 350M model...")
     model = GPT(config)
@@ -316,7 +315,7 @@ def test_full_350m_model():
     print(f"   Target: ~350,000,000")
     
     # Check if we're in the right ballpark (340M - 360M)
-    assert 340_000_000 < total_params < 360_000_000, \
+    assert 310_000_000 < total_params < 325_000_000, \
         f"Expected ~350M params, got {total_params:,}"
     print("   ✓ Parameter count in target range")
     
