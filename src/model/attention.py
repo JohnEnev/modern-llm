@@ -8,13 +8,15 @@ class MultiHeadAttention(nn.Module):
     Multi-head attention with RoPE positional encoding
     """
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, max_seq_len: int = 2048, 
+    def __init__(self, d_model: int, n_heads: int, n_kv_heads: int = None, dropout: float = 0.0, max_seq_len: int = 2048, 
                  use_flash: bool = True, use_qk_norm: bool = True):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
         self.d_model = d_model
         self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads if n_kv_heads else n_heads
+        self.n_rep = n_heads // self.n_kv_heads
         self.d_k = d_model // n_heads # dimension per head
         self.dropout = dropout
         self.max_seq_len = max_seq_len
@@ -23,8 +25,10 @@ class MultiHeadAttention(nn.Module):
 
         # Q, K, V projections
         self.W_q = nn.Linear(d_model, d_model, bias=False)
-        self.W_k = nn.Linear(d_model, d_model, bias=False)
-        self.W_v = nn.Linear(d_model, d_model, bias=False)
+        assert n_heads % self.n_kv_heads == 0 # Check if number of KV heads makes sense
+        # If using GQA
+        self.W_k = nn.Linear(d_model, self.n_kv_heads * self.d_k, bias=False)
+        self.W_v = nn.Linear(d_model, self.n_kv_heads * self.d_k, bias=False)
 
         # Output projection
         self.W_o = nn.Linear(d_model, d_model, bias=False)
@@ -57,8 +61,8 @@ class MultiHeadAttention(nn.Module):
 
         # Step 2 - Split into multiple heads
         q = q.view(batch_size, seq_len, self.n_heads, self.d_k) # [batch, seq_len, n_heads, d_k]
-        k = k.view(batch_size, seq_len, self.n_heads, self.d_k) # [batch, seq_len, n_heads, d_k]
-        v = v.view(batch_size, seq_len, self.n_heads, self.d_k) # [batch, seq_len, n_heads, d_k]
+        k = k.view(batch_size, seq_len, self.n_kv_heads, self.d_k) # [batch, seq_len, n_kv_heads, d_k]
+        v = v.view(batch_size, seq_len, self.n_kv_heads, self.d_k) # [batch, seq_len, n_kv_heads, d_k]
 
         # Step 2.b - Apply QK-Norm if present
         if self.use_qk_norm:
@@ -69,6 +73,11 @@ class MultiHeadAttention(nn.Module):
         freqs = self.rope_cache.get_freqs(seq_len)
         q = apply_rope(q, freqs)
         k = apply_rope(k, freqs)
+
+        # Step 3.b - if GQA, expand k and v. Apply on the 3rd dim
+        if self.n_rep > 1:
+            k = k.repeat_interleave(self.n_rep, dim=2)
+            v = v.repeat_interleave(self.n_rep, dim=2)
 
         # Step 4 - Transpose for attention computation
         q = q.transpose(1, 2) # [batch, n_heads, seq_len, d_k]
@@ -148,7 +157,8 @@ def test_attention():
     # Test 4: Parameter count
     total_params = sum(p.numel() for p in attn.parameters())
     # Q, K, V, O projections: 4 * d_model * d_model
-    expected_params = 4 * d_model * d_model
+    # Plus QK-Norm scale: n_heads (one learnable scale per head)
+    expected_params = 4 * d_model * d_model + n_heads
     assert total_params == expected_params, f"Expected {expected_params} params, got {total_params}"
     print(f"✓ Parameter count correct: {total_params:,}")
   

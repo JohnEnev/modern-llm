@@ -16,6 +16,7 @@ class TransformerBlock(nn.Module):
             self,
             d_model: int,
             n_heads: int,
+            n_kv_heads: int = None,
             dropout: float = 0.0,
             max_seq_len: int = 2048,
             use_flash: bool = True,
@@ -28,6 +29,7 @@ class TransformerBlock(nn.Module):
         self.attention = MultiHeadAttention(
             d_model=d_model, 
             n_heads=n_heads,
+            n_kv_heads=n_kv_heads,
             dropout=dropout,
             max_seq_len=max_seq_len,
             use_flash=use_flash,

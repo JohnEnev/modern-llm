@@ -12,6 +12,7 @@ class GPTConfig:
             d_model: int = 1024,
             n_layers: int = 24,
             n_heads: int = 16,
+            n_kv_heads: int = 4,
             dropout: float = 0.0,
             max_seq_len: int = 1024,
             use_flash: bool = True,
@@ -22,6 +23,7 @@ class GPTConfig:
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
         self.dropout = dropout
         self.max_seq_len = max_seq_len
         self.use_flash = use_flash
@@ -53,6 +55,7 @@ class GPT(nn.Module):
             TransformerBlock(
                 d_model=config.d_model,
                 n_heads=config.n_heads,
+                n_kv_heads=config.n_kv_heads,
                 dropout=config.dropout,
                 max_seq_len=config.max_seq_len,
                 use_flash=config.use_flash,
