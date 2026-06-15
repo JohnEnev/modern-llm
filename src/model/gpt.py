@@ -15,7 +15,8 @@ class GPTConfig:
             dropout: float = 0.0,
             max_seq_len: int = 1024,
             use_flash: bool = True,
-            tie_weights: bool = True
+            tie_weights: bool = True,
+            use_qk_norm: bool = True
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -25,6 +26,7 @@ class GPTConfig:
         self.max_seq_len = max_seq_len
         self.use_flash = use_flash
         self.tie_weights = tie_weights
+        self.use_qk_norm = use_qk_norm
         
 class GPT(nn.Module):
     """
@@ -53,7 +55,8 @@ class GPT(nn.Module):
                 n_heads=config.n_heads,
                 dropout=config.dropout,
                 max_seq_len=config.max_seq_len,
-                use_flash=config.use_flash
+                use_flash=config.use_flash,
+                use_qk_norm=config.use_qk_norm
             )
             for _ in range(config.n_layers)
         ]) # List of [TransformerBlock] of length n_layers, each block processes [batch, seq_len, d_model]

@@ -8,7 +8,8 @@ class MultiHeadAttention(nn.Module):
     Multi-head attention with RoPE positional encoding
     """
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, max_seq_len: int = 2048, use_flash: bool = True):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0, max_seq_len: int = 2048, 
+                 use_flash: bool = True, use_qk_norm: bool = True):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
@@ -18,6 +19,7 @@ class MultiHeadAttention(nn.Module):
         self.dropout = dropout
         self.max_seq_len = max_seq_len
         self.use_flash = use_flash
+        self.use_qk_norm = use_qk_norm
 
         # Q, K, V projections
         self.W_q = nn.Linear(d_model, d_model, bias=False)
@@ -32,6 +34,10 @@ class MultiHeadAttention(nn.Module):
 
         # Dropout
         self.attn_dropout = nn.Dropout(dropout) if dropout > 0 else None
+
+        # QK Norm
+        if use_qk_norm:
+            self.qk_scale = nn.Parameter(torch.ones(n_heads) * (self.d_k ** 0.5))
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -54,6 +60,11 @@ class MultiHeadAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.n_heads, self.d_k) # [batch, seq_len, n_heads, d_k]
         v = v.view(batch_size, seq_len, self.n_heads, self.d_k) # [batch, seq_len, n_heads, d_k]
 
+        # Step 2.b - Apply QK-Norm if present
+        if self.use_qk_norm:
+            q = F.normalize(q, dim=-1) * self.qk_scale.view(1, 1, -1, 1)
+            k = F.normalize(k, dim=-1)
+
         # Step 3 - Apply RoPE to q and k
         freqs = self.rope_cache.get_freqs(seq_len)
         q = apply_rope(q, freqs)
@@ -70,7 +81,8 @@ class MultiHeadAttention(nn.Module):
                 q, k, v,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True # Automatically applies causal mask
+                is_causal=True, # Automatically applies causal mask,
+                scale=1 if self.use_qk_norm else None,
             )
         else:
             # Manual attention computation (for learning)

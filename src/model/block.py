@@ -18,7 +18,8 @@ class TransformerBlock(nn.Module):
             n_heads: int,
             dropout: float = 0.0,
             max_seq_len: int = 2048,
-            use_flash: bool = True
+            use_flash: bool = True,
+            use_qk_norm: bool = True
     ):
         super().__init__()
         # Pre-Attention Normalization
@@ -29,7 +30,9 @@ class TransformerBlock(nn.Module):
             n_heads=n_heads,
             dropout=dropout,
             max_seq_len=max_seq_len,
-            use_flash=use_flash)
+            use_flash=use_flash,
+            use_qk_norm=use_qk_norm,
+        )
         # Pre-MLP Normalization
         self.norm2 = RMSNorm(d_model)
         # SwiGLU MLP
