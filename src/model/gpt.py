@@ -19,7 +19,7 @@ class GPTConfig:
             tie_weights: bool = True,
             use_qk_norm: bool = True,
             use_diff_attn: bool = True,
-            use_mhc: bool = True,
+            use_mhc: bool = False,
             n_streams: int = 4,
     ):
         self.vocab_size = vocab_size
