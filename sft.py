@@ -29,7 +29,7 @@ class SFTConfig:
     checkpoint_dir: str = "/workspace/checkpoints_sft"
     
     # Data — mix of general, math, code
-    # Ratios: 60% OpenHermes, 30% MetaMath, 10% CodeAlpaca
+    # Ratios: 59% OpenHermes, ~39% MetaMath, ~0.7% GSM8K, ~2% CodeAlpaca
     data_sources: list = field(default=None)  # defined in __post_init__
     
     # Training
@@ -66,7 +66,15 @@ class SFTConfig:
                     "split": "train",
                     "instruction_key": "query",
                     "response_key": "response",
-                    "max_examples": 300_000,  # 30%
+                    "max_examples": 395_000,  # Full set
+                },
+                {
+                    "name": "openai/gsm8k",
+                    "name_arg": "main",
+                    "split": "train",
+                    "instruction_key": "question",
+                    "response_key": "answer",
+                    # no max_examples — use full ~7.5K
                 },
                 {
                     "name": "sahil2801/CodeAlpaca-20k",
@@ -113,26 +121,28 @@ def sft_train(config: SFTConfig):
     model_config = GPTConfig()
     model = GPT(model_config).to(device)
     
-    resume_path = "/workspace/sft_step_005000.pt"
-    if os.path.exists(resume_path):
-        print(f"Resuming from {resume_path}...")
-        ckpt = torch.load(resume_path, weights_only=False)
-        state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model_weights"].items()}
-        model.load_state_dict(state_dict)
-        start_step = ckpt["step"]
-        print(f"✓ Resumed from step {start_step}")
-    else:
-        print(f"Loading base model from {config.base_checkpoint}...")
-        checkpoint = torch.load(config.base_checkpoint, weights_only=False)
-        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
-        model.load_state_dict(state_dict)
-        start_step = 0
-        print("✓ Base model loaded")
+    #resume_path = "/workspace/sft_step_005000.pt"
+    #if os.path.exists(resume_path):
+    #    print(f"Resuming from {resume_path}...")
+    #    ckpt = torch.load(resume_path, weights_only=False)
+    #    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model_weights"].items()}
+    #    model.load_state_dict(state_dict)
+    #    start_step = ckpt["step"]
+    #    print(f"✓ Resumed from step {start_step}")
+    #else:
+    print(f"Loading base model from {config.base_checkpoint}...")
+    checkpoint = torch.load(config.base_checkpoint, weights_only=False)
+    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
+    model.load_state_dict(state_dict)
+    start_step = 0
+    print("✓ Base model loaded")
     
     # Compile for speed
     model = torch.compile(model)
     
     # SFT dataset
+    g = torch.Generator()
+    g.manual_seed(42)
     train_dataset = SFTDataset(config.data_sources, config.max_seq_len, enc)
     train_loader = DataLoader(
         train_dataset,
@@ -141,6 +151,7 @@ def sft_train(config: SFTConfig):
         pin_memory=True,
         drop_last=True,
         num_workers=4,
+        generator=g,
     )
     
     # Total steps across epochs
@@ -158,9 +169,9 @@ def sft_train(config: SFTConfig):
     )
     
     # Restore optimizer state if resuming
-    if start_step > 0 and "optimizer_state" in ckpt:
-        optimizer.load_state_dict(ckpt["optimizer_state"])
-        print("✓ Optimizer state restored")
+    #if start_step > 0 and "optimizer_state" in ckpt:
+    #    optimizer.load_state_dict(ckpt["optimizer_state"])
+    #    print("✓ Optimizer state restored")
 
     # Training loop
     model.train()
@@ -220,8 +231,12 @@ def sft_train(config: SFTConfig):
             print(f"  >>> Saved: {path}")
     
     # Final save
-    path = os.path.join(config.checkpoint_dir, "sft_final.pt")
-    torch.save({"model_weights": model.state_dict(), "step": total_steps}, path)
+    path = os.path.join(config.checkpoint_dir, "sft_final_v1v2.pt")  # rename so it doesn't clobber V1 sft_final
+    torch.save({
+        "model_weights": model.state_dict(),
+        "step": total_steps,
+        "config": vars(config),  # save full config for reproducibility
+    }, path)
     print(f"\nSFT complete! Final model: {path}")
     
     if HAS_WANDB:

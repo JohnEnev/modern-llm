@@ -16,6 +16,7 @@ from src.model.gpt import GPT, GPTConfig
 from src.data.dataset import PretrainDataset
 from src.optim.muon import configure_optimizers
 from src.model.attention import DifferentialAttention
+from src.model.mhc import MHCResidual
 
 torch.set_float32_matmul_precision('high') # for torch optimization
 
@@ -388,6 +389,11 @@ def train(config: TrainConfig):
         lr = get_lr(step, config.warmup_steps, config.max_steps, config.max_lr, config.min_lr)
         for param_group in adamw_optimizer.param_groups:
             param_group["lr"] = lr
+        # If using Muon
+        if muon_optimizer:
+            muon_lr = lr * (config.muon_lr / config.max_lr)
+            for param_group in muon_optimizer.param_groups:
+                param_group["lr"] = muon_lr
 
         # Zero gradients
         if muon_optimizer:
@@ -448,9 +454,12 @@ def train(config: TrainConfig):
             )
 
             log_dict = {
-                "train/loss": loss.item(),
+                "train/loss": running_loss,
                 "train/lr": lr,
-                "train/grad_norm": grad_norm,
+                "train/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/step_time_ms": step_time * 1000,
+                "train/muon_lr": muon_lr if muon_optimizer else 0.0,
             }
 
             if lambdas is not None:
@@ -463,7 +472,7 @@ def train(config: TrainConfig):
             mhc_stats = get_mhc_stats(model)
             if mhc_stats is not None:
                 log_dict.update(mhc_stats)
-                
+
             if HAS_WANDB:
                 wandb.log(log_dict, step=step)
 
@@ -478,12 +487,17 @@ def train(config: TrainConfig):
             lambdas = print_differential_lambdas(model, step)
 
             if HAS_WANDB:
-                wandb.log({"val/loss": val_loss}, step=step)
-                wandb.log({
-                    "diff_attn/lambda_min": lambdas.min().item(),
-                    "diff_attn/lambda_max": lambdas.max().item(),
-                    "diff_attn/lambda_mean": lambdas.mean().item(),
-                }, step=step)
+                eval_log = {"val/loss": val_loss}
+                
+                if lambdas is not None:
+                    eval_log.update({
+                        "diff_attn/lambda_min": lambdas.min().item(),
+                        "diff_attn/lambda_max": lambdas.max().item(),
+                        "diff_attn/lambda_mean": lambdas.mean().item(),
+                    })
+                
+                wandb.log(eval_log, step=step)
+
             for prompt in EVAL_PROMPTS:
                 sample = generate_sample(eval_model, enc, device, prompt=prompt)
                 print(f"  >>> [{prompt}] {sample[:150]}")

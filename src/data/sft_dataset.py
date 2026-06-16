@@ -46,6 +46,7 @@ class SFTDataset(Dataset):
         """Load examples from a HuggingFace dataset."""
         dataset = load_dataset(
             source["name"],
+            source.get("name_arg"), 
             split=source.get("split", "train"),
             streaming=False,
         )
