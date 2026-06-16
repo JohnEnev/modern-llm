@@ -93,12 +93,15 @@ class MHCResidual(nn.Module):
             streams: [S, B, T, D]
         """
 
+        assert streams.dim() == 4, f"Expected streams [S, B, T, D], got {streams.shape}"
+
         S, B, T, D = streams.shape
-        assert S == self.n_streams
-        assert D == self.d_model
+
+        assert S == self.n_streams, f"Expected {self.n_streams} streams, got {S}"
+        assert D == self.d_model, f"Expected d_model={self.d_model}, got {D}"
 
         # Step 1 - Mix residual streams with constrained doubly-stochastic matrix.
-        A = self.mixing_matrix()
+        A = self.mixing_matrix().to(dtype=streams.dtype)
         mixed = torch.einsum("ij,jbtd->ibtd", A, streams)
 
         # Step 2 - Aggregate streams into one sublayer input.

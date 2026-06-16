@@ -218,6 +218,47 @@ def get_differential_lambdas(model):
     return torch.tensor(values)
 
 @torch.no_grad()
+def get_mhc_stats(model):
+    raw_model = model.module if hasattr(model, "module") else model
+
+    stats = {}
+
+    row_errors = []
+    col_errors = []
+    write_mins = []
+    write_maxs = []
+    read_entropies = []
+
+    for name, module in raw_model.named_modules():
+        if isinstance(module, MHCResidual):
+            A = module.mixing_matrix().detach().float()
+
+            row_error = (A.sum(dim=-1) - 1).abs().max().item()
+            col_error = (A.sum(dim=-2) - 1).abs().max().item()
+
+            row_errors.append(row_error)
+            col_errors.append(col_error)
+
+            write = module.write_gates.detach().float()
+            write_mins.append(write.min().item())
+            write_maxs.append(write.max().item())
+
+            read = F.softmax(module.read_logits.detach().float(), dim=0)
+            entropy = -(read * (read + 1e-8).log()).sum().item()
+            read_entropies.append(entropy)
+
+    if not row_errors:
+        return None
+
+    return {
+        "mhc/row_error_max": max(row_errors),
+        "mhc/col_error_max": max(col_errors),
+        "mhc/write_gate_min": min(write_mins),
+        "mhc/write_gate_max": max(write_maxs),
+        "mhc/read_entropy_mean": sum(read_entropies) / len(read_entropies),
+    }
+
+@torch.no_grad()
 def generate_sample(model, enc, device, prompt="The", max_tokens=100, temperature=0.8):
     """Generate text from a prompt."""
     # Set model to eval mode
@@ -418,6 +459,11 @@ def train(config: TrainConfig):
                     "diff_attn/lambda_max": lambdas.max().item(),
                     "diff_attn/lambda_mean": lambdas.mean().item(),
                 })
+
+            mhc_stats = get_mhc_stats(model)
+            if mhc_stats is not None:
+                log_dict.update(mhc_stats)
+                
             if HAS_WANDB:
                 wandb.log(log_dict, step=step)
 
