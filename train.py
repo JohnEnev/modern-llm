@@ -15,6 +15,7 @@ import tiktoken
 from src.model.gpt import GPT, GPTConfig
 from src.data.dataset import PretrainDataset
 from src.optim.muon import configure_optimizers
+from src.model.attention import DifferentialAttention
 
 torch.set_float32_matmul_precision('high') # for torch optimization
 
@@ -183,6 +184,38 @@ def evaluate(model, val_dataset, config, device, dtype, num_batches=20):
 
     # Return average loss
     return total_loss / min(num_batches, len(val_dataloader))
+
+@torch.no_grad()
+def print_differential_lambdas(model, step: int):
+    lambdas = get_differential_lambdas(model)
+
+    if lambdas is None:
+        return None
+
+    print(
+        f"Step {step} | diff_attn lambda "
+        f"min={lambdas.min().item():.4f} "
+        f"max={lambdas.max().item():.4f} "
+        f"mean={lambdas.mean().item():.4f}"
+    )
+
+    return lambdas
+
+@torch.no_grad()
+def get_differential_lambdas(model):
+    raw_model = model.module if hasattr(model, "module") else model
+
+    values = []
+
+    for name, module in raw_model.named_modules():
+        if isinstance(module, DifferentialAttention):
+            lam = module.compute_lambda().detach().float().cpu().item()
+            values.append(lam)
+
+    if not values:
+        return None
+
+    return torch.tensor(values)
 
 @torch.no_grad()
 def generate_sample(model, enc, device, prompt="The", max_tokens=100, temperature=0.8):
@@ -361,6 +394,9 @@ def train(config: TrainConfig):
 
         # Logging
         if step % config.log_interval == 0:
+            
+            lambdas = get_differential_lambdas(model)
+            
             print(
                 f"Step {step:>6d} | "
                 f"Loss {running_loss:.4f} | "
@@ -369,13 +405,21 @@ def train(config: TrainConfig):
                 f"tok/s {tokens_per_sec:,.0f} | "
                 f"dt {step_time*1000:.0f}ms"
             )
+
+            log_dict = {
+                "train/loss": loss.item(),
+                "train/lr": lr,
+                "train/grad_norm": grad_norm,
+            }
+
+            if lambdas is not None:
+                log_dict.update({
+                    "diff_attn/lambda_min": lambdas.min().item(),
+                    "diff_attn/lambda_max": lambdas.max().item(),
+                    "diff_attn/lambda_mean": lambdas.mean().item(),
+                })
             if HAS_WANDB:
-                wandb.log({
-                    "train/loss": running_loss,
-                    "train/lr": lr,
-                    "train/grad_norm": grad_norm.item(),
-                    "train/tok_per_sec": tokens_per_sec,
-                }, step=step)
+                wandb.log(log_dict, step=step)
 
         # Checkpointing
         if step > 0 and step % config.save_interval == 0:
@@ -385,8 +429,15 @@ def train(config: TrainConfig):
             eval_model = ema.model if ema else model
             val_loss = evaluate(eval_model, val_dataset, config, device, dtype)
             print(f"  >>> val_loss: {val_loss:.4f}")
+            lambdas = print_differential_lambdas(model, step)
+
             if HAS_WANDB:
                 wandb.log({"val/loss": val_loss}, step=step)
+                wandb.log({
+                    "diff_attn/lambda_min": lambdas.min().item(),
+                    "diff_attn/lambda_max": lambdas.max().item(),
+                    "diff_attn/lambda_mean": lambdas.mean().item(),
+                }, step=step)
             for prompt in EVAL_PROMPTS:
                 sample = generate_sample(eval_model, enc, device, prompt=prompt)
                 print(f"  >>> [{prompt}] {sample[:150]}")

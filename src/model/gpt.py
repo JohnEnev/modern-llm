@@ -134,9 +134,9 @@ class GPT(nn.Module):
             # Flatten for cross-entropy
             # logits: [batch*seq_len, vocab_size], targets: [batch*seq_len]
             loss = F.cross_entropy(
-                logits.view(-1, self.config.vocab_size),
-                targets.view(-1),
-                ignore_index=-1 # Ignore padding tokens if any
+                logits.reshape(-1, self.config.vocab_size),
+                targets.reshape(-1),
+                ignore_index=-100 # Ignore padding tokens if any
             )
 
         return logits, loss
