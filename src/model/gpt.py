@@ -18,7 +18,9 @@ class GPTConfig:
             use_flash: bool = True,
             tie_weights: bool = True,
             use_qk_norm: bool = True,
-            use_diff_attn: bool = True
+            use_diff_attn: bool = True,
+            use_mhc: bool = False,
+            n_streams: int = 2,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -31,6 +33,8 @@ class GPTConfig:
         self.tie_weights = tie_weights
         self.use_qk_norm = use_qk_norm
         self.use_diff_attn = use_diff_attn
+        self.use_mhc = use_mhc
+        self.n_streams = n_streams
         
 class GPT(nn.Module):
     """
@@ -64,6 +68,8 @@ class GPT(nn.Module):
                 use_flash=config.use_flash,
                 use_qk_norm=config.use_qk_norm,
                 use_diff_attn=config.use_diff_attn, 
+                use_mhc = config.use_mhc,
+                n_streams = config.n_streams,
             )
             for i in range(config.n_layers)
         ]) # List of [TransformerBlock] of length n_layers, each block processes [batch, seq_len, d_model]
@@ -77,6 +83,14 @@ class GPT(nn.Module):
         # Optionally tie weights of token embeddings and language modeling head
         if config.tie_weights:
             self.lm_head.weight = self.token_embeddings.weight
+
+        if config.use_mhc:
+            read_logits = torch.full((config.n_streams,), -2.0)
+            read_logits[0] = 2.0
+            self.final_read_logits = nn.Parameter(read_logits)
+        else:
+            self.final_read_logits = None
+
 
         self.apply(self._init_weights)
 
@@ -118,9 +132,21 @@ class GPT(nn.Module):
         if self.emb_dropout is not None:
             x = self.emb_dropout(x) # [batch, seq_len, d_model]
 
-        # Step 3 - Pass through transformer blocks
-        for block in self.blocks:
-            x = block(x) # [batch, seq_len, d_model]
+        # Step 3 - Pass through transformer blocks - or mHC streams
+        if self.config.use_mhc:
+            # Initialize S streams as copies of x: [S, B, T, D]
+            streams = x.unsqueeze(0).repeat(self.config.n_streams, 1, 1, 1)
+            
+            for block in self.blocks:
+                streams = block(streams)
+            
+            # Learned final readout over streams
+            read_weights = F.softmax(self.final_read_logits, dim=0)
+            x = torch.einsum('s,sbtd->btd', read_weights, streams)
+
+        else:
+            for block in self.blocks:
+                x = block(x) # [batch, seq_len, d_model]
 
         # Step 4 - Final RMSNorm
         x = self.norm(x) # [batch, seq_len, d_model]
@@ -312,7 +338,7 @@ def test_full_350m_model():
     param_counts = model.count_parameters()
     total_params = param_counts['total']
     print(f"   Total parameters: {total_params:,}")
-    print(f"   Target: ~350,000,000")
+    print(f"   Target: ~315,000,000")
     
     # Check if we're in the right ballpark (340M - 360M)
     assert 310_000_000 < total_params < 325_000_000, \
@@ -338,6 +364,38 @@ def test_full_350m_model():
     print("350M Model Tests Passed! ✓")
     print("="*60)
 
+def test_gpt_mhc_model():
+    config = GPTConfig(
+        vocab_size=1000,
+        d_model=256,
+        n_layers=4,
+        n_heads=8,
+        n_kv_heads=2,
+        dropout=0.0,
+        max_seq_len=128,
+        use_flash=True,
+        tie_weights=True,
+        use_qk_norm=True,
+        use_diff_attn=True,
+        use_mhc=True,
+        n_streams=2,
+    )
+
+    model = GPT(config)
+
+    input_ids = torch.randint(0, config.vocab_size, (2, 16))
+    targets = torch.randint(0, config.vocab_size, (2, 16))
+
+    logits, loss = model(input_ids, targets)
+
+    assert logits.shape == (2, 16, config.vocab_size)
+    assert loss is not None
+    assert torch.isfinite(loss)
+
+    loss.backward()
+
+    print("✓ GPT with mHC works")
+
 
 def run_all_tests():
     """Run all GPT tests."""
@@ -347,6 +405,7 @@ def run_all_tests():
     
     test_gpt_model()
     test_full_350m_model()
+    test_gpt_mhc_model()
     
     print("\n" + "="*70)
     print(" "*15 + "ALL GPT MODEL TESTS PASSED! 🎉")
