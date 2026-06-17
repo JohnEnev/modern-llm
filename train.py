@@ -516,8 +516,10 @@ def train(config: TrainConfig):
         step_time = time.time() - t_start
         tokens_per_sec = (config.seq_len * config.micro_batch_size * config.grad_accum_steps) / step_time
 
+        completed_step = step + 1
+
         # Logging
-        if step % config.log_interval == 0:
+        if completed_step % config.log_interval == 0:
             
             lambdas = get_differential_lambdas(model)
             
@@ -554,10 +556,10 @@ def train(config: TrainConfig):
                 wandb.log(log_dict, step=step)
 
         # Checkpointing
-        if step > 0 and step % config.save_interval == 0:
+        if completed_step % config.save_interval == 0:
             save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=ema)
 
-        if step > 0 and step % config.eval_interval == 0:
+        if completed_step % config.eval_interval == 0:
             eval_model = ema.model if ema else model
             val_loss = evaluate(eval_model, val_dataset, config, device, dtype)
             print(f"  >>> val_loss: {val_loss:.4f}")

@@ -96,7 +96,17 @@ def configure_optimizers(
             continue
 
         # 2D weight matrices go to Muon, excluding non-matrix params
-        if param.ndim == 2 and not any(k in name for k in ["embedding", "lm_head", "norm", "bias"]):
+        is_muon_matrix = (
+            param.ndim == 2
+            and any(k in name for k in [
+                "W_q.weight", "W_k.weight", "W_v.weight", "W_o.weight",
+                "mlp", "w1", "w2", "w3",
+            ])
+            and "embedding" not in name
+            and "lm_head" not in name
+        )
+        
+        if is_muon_matrix:
             muon_params.append(param)
         else:
             adamw_params.append(param)

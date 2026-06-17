@@ -118,7 +118,20 @@ def sft_train(config: SFTConfig):
         wandb.init(project="llm-350m-sft", config=vars(config))
     
     # Load base model
-    model_config = GPTConfig()
+    model_config = GPTConfig(
+        vocab_size=50304,
+        d_model=1024,
+        n_layers=24,
+        n_heads=16,
+        n_kv_heads=16,
+        dropout=0.0,
+        max_seq_len=1024,
+        use_flash=True,
+        tie_weights=True,
+        use_qk_norm=False,
+        use_diff_attn=False,
+        use_mhc=False,
+    )
     model = GPT(model_config).to(device)
     
     #resume_path = "/workspace/sft_step_005000.pt"
