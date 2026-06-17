@@ -6,6 +6,7 @@ import time
 import math
 import copy
 import glob
+import argparse
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ try:
     HAS_WANDB = True
 except ImportError:
     HAS_WANDB = False
+
 class EMA:
     """Exponential Moving Average of model weights.
     Use ema.model for eval and inference, not for training.
@@ -53,6 +55,23 @@ class EMA:
 
 @dataclass
 class TrainConfig:
+    # Model
+    vocab_size: int = 50304
+    d_model: int = 1024
+    n_layers: int = 24
+    n_heads: int = 16
+    n_kv_heads: int = 16
+    use_flash: bool = True
+    tie_weights: bool = True
+    use_qk_norm: bool = False
+    use_diff_attn: bool = False
+    use_mhc: bool = False
+    n_streams: int = 2
+    compile_model: bool = True
+
+    # Run metadata
+    run_name: str = "debug"
+
     # Data
     data_dir: str = "data/fineweb-edu/train"
     seq_len: int = 1024
@@ -304,7 +323,21 @@ def train(config: TrainConfig):
     enc = tiktoken.get_encoding("gpt2")
 
     # Model creation, using default GPTConfig for now
-    model_config = GPTConfig()
+    model_config = GPTConfig(
+        vocab_size=config.vocab_size,
+        d_model=config.d_model,
+        n_layers=config.n_layers,
+        n_heads=config.n_heads,
+        n_kv_heads=config.n_kv_heads,
+        dropout=0.0,
+        max_seq_len=config.seq_len,
+        use_flash=config.use_flash,
+        tie_weights=config.tie_weights,
+        use_qk_norm=config.use_qk_norm,
+        use_diff_attn=config.use_diff_attn,
+        use_mhc=config.use_mhc,
+        n_streams=config.n_streams,
+    )
     model = GPT(model_config).to(device)
 
     # Print architecture summary
@@ -339,8 +372,11 @@ def train(config: TrainConfig):
     print()
 
     print("Compiling model...")
-    model = torch.compile(model)
-    print("✓ Model compiled")
+    if config.compile_model:
+        model = torch.compile(model)
+        print("✓ Model compiled")
+    else:
+        print("✓ Skipping torch.compile")
 
     # EMA
     ema = EMA(model, decay=config.ema_decay) if config.use_ema else None
@@ -404,12 +440,19 @@ def train(config: TrainConfig):
         print("✓ Starting fresh training")
 
     if HAS_WANDB:
-        wandb.init(project="llm-350m", config={
+        wandb.init(project="llm-350m", name=config.run_name, config={
             "max_steps": config.max_steps,
             "micro_batch_size": config.micro_batch_size,
             "grad_accum_steps": config.grad_accum_steps,
             "max_lr": config.max_lr,
             "seq_len": config.seq_len,
+            "use_qk_norm": config.use_qk_norm,
+            "use_diff_attn": config.use_diff_attn,
+            "use_mhc": config.use_mhc,
+            "n_streams": config.n_streams,
+            "n_kv_heads": config.n_kv_heads,
+            "use_muon": config.use_muon,
+            "use_ema": config.use_ema,
         })
 
     # Training loop
@@ -543,7 +586,35 @@ def train(config: TrainConfig):
     if HAS_WANDB:
         wandb.finish()
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--run-name", type=str, default="debug")
+
+    parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--seq-len", type=int, default=1024)
+    parser.add_argument("--micro-batch-size", type=int, default=16)
+    parser.add_argument("--grad-accum-steps", type=int, default=32)
+
+    parser.add_argument("--d-model", type=int, default=1024)
+    parser.add_argument("--n-layers", type=int, default=24)
+    parser.add_argument("--n-heads", type=int, default=16)
+    parser.add_argument("--n-kv-heads", type=int, default=16)
+
+    parser.add_argument("--use-qk-norm", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-diff-attn", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-mhc", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--n-streams", type=int, default=2)
+
+    parser.add_argument("--use-muon", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-ema", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=True)
+
+    parser.add_argument("--checkpoint-dir", type=str, default="/workspace/checkpoints_v2")
+
+    args = parser.parse_args()
+    return TrainConfig(**vars(args))
 
 if __name__ == "__main__":
-    config = TrainConfig()
+    config = parse_args()
     train(config)
