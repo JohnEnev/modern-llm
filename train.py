@@ -131,8 +131,12 @@ def get_lr(step, warmup_steps, max_steps, max_lr, min_lr):
     return (1 + math.cos(math.pi * progress)) * (max_lr - min_lr) / 2 + min_lr
 
 
-def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=None):
-    """Save everything needed to resume training."""
+def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=None, keep_last_n=3):
+    """Save everything needed to resume training.
+    
+    Automatically deletes old checkpoints, keeping only the most recent
+    `keep_last_n` files, to avoid filling the network volume.
+    """
     os.makedirs(config.checkpoint_dir, exist_ok=True)
     path = os.path.join(config.checkpoint_dir, f"step_{step:06d}.pt")
     checkpoint = {
@@ -148,6 +152,15 @@ def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=No
         checkpoint["ema"] = ema.state_dict()
     torch.save(checkpoint, path)
     print(f"  >>> Saved checkpoint: {path}")
+
+    # Clean up old checkpoints, keep only the most recent N
+    all_checkpoints = sorted(glob.glob(os.path.join(config.checkpoint_dir, "step_*.pt")))
+    for old_ckpt in all_checkpoints[:-keep_last_n]:
+        try:
+            os.remove(old_ckpt)
+            print(f"  >>> Removed old checkpoint: {old_ckpt}")
+        except OSError as e:
+            print(f"  >>> Warning: could not remove {old_ckpt}: {e}")
 
 def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
     """Find the most recent checkpoint in the directory."""
@@ -281,36 +294,31 @@ def get_mhc_stats(model):
 
 @torch.no_grad()
 def generate_sample(model, enc, device, prompt="The", max_tokens=100, temperature=0.8):
-    """Generate text from a prompt."""
-    # Set model to eval mode
     model.eval()
 
-    # Encode prompt into a tensor and on device
     token_ids = enc.encode(prompt)
     input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
 
-    # Loop through max_tokens
-    for i in range(max_tokens):
-        # Crop to context window
+    real_vocab_size = enc.n_vocab  # GPT-2 tiktoken: 50257
+
+    for _ in range(max_tokens):
         input_crop = input_ids[:, -model.config.max_seq_len:]
 
-        # Go through forward pass
         logits, _ = model(input_crop)
-
-        # Only take last position and add temperature
         logits = logits[:, -1, :] / temperature
 
-        # Sample from the logits
+        # Important: model vocab is padded to 50304, tokenizer vocab is 50257.
+        # Never sample padded token IDs.
+        logits[:, real_vocab_size:] = -float("inf")
+
         probs = F.softmax(logits, dim=-1)
         next_token = torch.multinomial(probs, num_samples=1)
 
-        # Append the new token to input ids
         input_ids = torch.cat([input_ids, next_token], dim=1)
 
         if next_token.item() == enc.eot_token:
             break
 
-    # Return the decoded answer
     return enc.decode(input_ids[0].tolist())
 
 

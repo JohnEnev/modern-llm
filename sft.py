@@ -4,6 +4,7 @@
 import os
 import time
 import math
+import glob
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass, field
@@ -106,6 +107,25 @@ def get_sft_lr(step, warmup_steps, total_steps, lr):
     progress = (step - warmup_steps) / (total_steps - warmup_steps)
     return lr * (1 + math.cos(math.pi * progress)) / 2
 
+def save_sft_checkpoint(model, optimizer, step, checkpoint_dir, keep_last_n=3):
+    """Save SFT checkpoint with automatic cleanup of old files."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    path = os.path.join(checkpoint_dir, f"sft_step_{step:06d}.pt")
+    torch.save({
+        "model_weights": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "step": step,
+    }, path)
+    print(f"  >>> Saved: {path}")
+
+    # Clean up old checkpoints, keep only the most recent N
+    all_checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "sft_step_*.pt")))
+    for old_ckpt in all_checkpoints[:-keep_last_n]:
+        try:
+            os.remove(old_ckpt)
+            print(f"  >>> Removed old checkpoint: {old_ckpt}")
+        except OSError as e:
+            print(f"  >>> Warning: could not remove {old_ckpt}: {e}")
 
 def sft_train(config: SFTConfig):
     """Main SFT training loop."""
@@ -134,22 +154,27 @@ def sft_train(config: SFTConfig):
     )
     model = GPT(model_config).to(device)
     
-    #resume_path = "/workspace/sft_step_005000.pt"
-    #if os.path.exists(resume_path):
-    #    print(f"Resuming from {resume_path}...")
-    #    ckpt = torch.load(resume_path, weights_only=False)
-    #    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model_weights"].items()}
-    #    model.load_state_dict(state_dict)
-    #    start_step = ckpt["step"]
-    #    print(f"✓ Resumed from step {start_step}")
-    #else:
-    print(f"Loading base model from {config.base_checkpoint}...")
-    checkpoint = torch.load(config.base_checkpoint, weights_only=False)
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
-    model.load_state_dict(state_dict)
-    start_step = 0
-    print("✓ Base model loaded")
-    
+    # Resume from latest checkpoint if one exists (e.g., after a crash)
+    resume_path = None
+    existing = sorted(glob.glob(os.path.join(config.checkpoint_dir, "sft_step_*.pt")))
+    if existing:
+        resume_path = existing[-1]
+
+    if resume_path:
+        print(f"Resuming from {resume_path}...")
+        ckpt = torch.load(resume_path, weights_only=False)
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt["model_weights"].items()}
+        model.load_state_dict(state_dict)
+        start_step = ckpt["step"]
+        print(f"✓ Resumed from step {start_step}")
+    else:
+        print(f"Loading base model from {config.base_checkpoint}...")
+        checkpoint = torch.load(config.base_checkpoint, weights_only=False)
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
+        model.load_state_dict(state_dict)
+        start_step = 0
+        print("✓ Base model loaded")
+
     # Compile for speed
     model = torch.compile(model)
     
@@ -181,10 +206,10 @@ def sft_train(config: SFTConfig):
         fused=True,
     )
     
-    # Restore optimizer state if resuming
-    #if start_step > 0 and "optimizer_state" in ckpt:
-    #    optimizer.load_state_dict(ckpt["optimizer_state"])
-    #    print("✓ Optimizer state restored")
+   # Restore optimizer state if resuming
+    if resume_path and "optimizer_state" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        print("✓ Optimizer state restored")
 
     # Training loop
     model.train()
@@ -234,14 +259,7 @@ def sft_train(config: SFTConfig):
                 wandb.log({"train/loss": running_loss, "train/lr": lr}, step=step)
         
         if step > 0 and step % config.save_interval == 0:
-            os.makedirs(config.checkpoint_dir, exist_ok=True)
-            path = os.path.join(config.checkpoint_dir, f"sft_step_{step:06d}.pt")
-            torch.save({
-                "model_weights": model.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "step": step,
-            }, path)
-            print(f"  >>> Saved: {path}")
+            save_sft_checkpoint(model, optimizer, step, config.checkpoint_dir)
     
     # Final save
     path = os.path.join(config.checkpoint_dir, "sft_final_v1v2.pt")  # rename so it doesn't clobber V1 sft_final
