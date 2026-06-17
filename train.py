@@ -347,6 +347,7 @@ def train(config: TrainConfig):
         use_diff_attn=config.use_diff_attn,
         use_mhc=config.use_mhc,
         n_streams=config.n_streams,
+        mhc_every_n_layers=config.mhc_every_n_layers,
     )
     model = GPT(model_config).to(device)
 
@@ -367,6 +368,8 @@ def train(config: TrainConfig):
     print(f"use_mhc:         {model_config.use_mhc}")
     if model_config.use_mhc:
         print(f"n_streams:       {model_config.n_streams}")
+    if model_config.mhc_every_n_layers:
+        print(f"mhc_every_n_layers:       {model_config.mhc_every_n_layers}")
     print("-"*60)
     print("TRAINING CONFIG")
     print("-"*60)
