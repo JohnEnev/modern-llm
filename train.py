@@ -109,6 +109,7 @@ class TrainConfig:
     # Evaluation
     eval_interval: int = 500
     val_dir: str = "data/fineweb-edu/val"
+    eval_use_ema: bool = False  # for short ablations, default to raw model
 
 EVAL_PROMPTS = [
     "The meaning of life is",
@@ -561,17 +562,22 @@ def train(config: TrainConfig):
                 log_dict.update(mhc_stats)
 
             if HAS_WANDB:
-                wandb.log(log_dict, step=step)
+                wandb.log(log_dict, step=completed_step)
 
         # Checkpointing
         if completed_step % config.save_interval == 0:
-            save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=ema)
+            save_checkpoint(model, muon_optimizer, adamw_optimizer, completed_step, config, ema=ema)
 
         if completed_step % config.eval_interval == 0:
-            eval_model = ema.model if ema else model
+            if config.eval_use_ema and ema is not None:
+                eval_model = ema.model
+            else:
+                eval_model = model
+            eval_model_name = "EMA" if (config.eval_use_ema and ema is not None) else "raw"
+            print(f"  >>> evaluating {eval_model_name} model")
             val_loss = evaluate(eval_model, val_dataset, config, device, dtype)
             print(f"  >>> val_loss: {val_loss:.4f}")
-            lambdas = print_differential_lambdas(model, step)
+            lambdas = print_differential_lambdas(model, completed_step)
 
             if HAS_WANDB:
                 eval_log = {"val/loss": val_loss}
@@ -583,7 +589,7 @@ def train(config: TrainConfig):
                         "diff_attn/lambda_mean": lambdas.mean().item(),
                     })
                 
-                wandb.log(eval_log, step=step)
+                wandb.log(eval_log, step=completed_step)
 
             for prompt in EVAL_PROMPTS:
                 sample = generate_sample(eval_model, enc, device, prompt=prompt)
@@ -621,8 +627,13 @@ def parse_args():
     parser.add_argument("--use-muon", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-ema", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--compile-model", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--eval-use-ema", action=argparse.BooleanOptionalAction, default=False)
 
     parser.add_argument("--checkpoint-dir", type=str, default="/workspace/checkpoints_v2")
+
+    parser.add_argument("--save-interval", type=int, default=1000)
+    parser.add_argument("--eval-interval", type=int, default=500)
+    parser.add_argument("--log-interval", type=int, default=10)
 
     args = parser.parse_args()
     return TrainConfig(**vars(args))
