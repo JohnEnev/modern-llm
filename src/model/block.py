@@ -73,7 +73,7 @@ class TransformerBlock(nn.Module):
                 d_model=d_model,
                 n_streams=n_streams,
                 identity_bias=3.0,
-                sinkhorn_iters=5,
+                sinkhorn_iters=2,
                 write_init=1.0,
             )
 
@@ -81,7 +81,7 @@ class TransformerBlock(nn.Module):
                 d_model=d_model,
                 n_streams=n_streams,
                 identity_bias=3.0,
-                sinkhorn_iters=5,
+                sinkhorn_iters=2,
                 write_init=1.0,
             )
 

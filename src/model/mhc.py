@@ -64,8 +64,10 @@ class MHCResidual(nn.Module):
 
         # Learned readout into the sublayer input.
         # Initialized to read mostly stream 0, so the model starts close to normal transformer.
-        read_logits = torch.full((n_streams,), -2.0)
-        read_logits[0] = 2.0
+        read_logits = torch.zeros(n_streams)
+        read_logits[0] = 1.0
+        if n_streams > 1:
+            read_logits[1:] = 0.0
         self.read_logits = nn.Parameter(read_logits)
 
         # Stream-specific write gates.
@@ -73,7 +75,7 @@ class MHCResidual(nn.Module):
         write = torch.zeros(n_streams)
         write[0] = write_init
         if n_streams > 1:
-            write[1:] = 0.1 * write_init
+            write[1:] = 0.25 * write_init
         self.write_gates = nn.Parameter(write)
 
     def mixing_matrix(self):

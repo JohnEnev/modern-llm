@@ -67,6 +67,7 @@ class TrainConfig:
     use_diff_attn: bool = False
     use_mhc: bool = False
     n_streams: int = 2
+    mhc_every_n_layers: int = 1
     compile_model: bool = True
 
     # Run metadata
@@ -623,6 +624,7 @@ def parse_args():
     parser.add_argument("--use-diff-attn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--use-mhc", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n-streams", type=int, default=2)
+    parser.add_argument("--mhc-every-n-layers", type=int, default=1)
 
     parser.add_argument("--use-muon", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-ema", action=argparse.BooleanOptionalAction, default=True)

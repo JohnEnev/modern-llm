@@ -21,6 +21,7 @@ class GPTConfig:
             use_diff_attn: bool = True,
             use_mhc: bool = True,
             n_streams: int = 2,
+            mhc_every_n_layers: int = 1,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -35,6 +36,7 @@ class GPTConfig:
         self.use_diff_attn = use_diff_attn
         self.use_mhc = use_mhc
         self.n_streams = n_streams
+        self.mhc_every_n_layers = mhc_every_n_layers
         
 class GPT(nn.Module):
     """
@@ -68,7 +70,7 @@ class GPT(nn.Module):
                 use_flash=config.use_flash,
                 use_qk_norm=config.use_qk_norm,
                 use_diff_attn=config.use_diff_attn, 
-                use_mhc = config.use_mhc,
+                use_mhc=config.use_mhc and (i % config.mhc_every_n_layers == 0),
                 n_streams = config.n_streams,
             )
             for i in range(config.n_layers)
