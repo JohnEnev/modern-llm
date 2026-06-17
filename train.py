@@ -366,6 +366,8 @@ def train(config: TrainConfig):
     print(f"use_muon:        {config.use_muon}")
     print(f"use_ema:         {config.use_ema}")
     print(f"warmup_steps:    {config.warmup_steps}")
+    print(f"micro_batch:     {config.micro_batch_size}")
+    print(f"grad_accum:      {config.grad_accum_steps}")   
     print(f"batch (tokens):  {config.micro_batch_size * config.grad_accum_steps * config.seq_len:,}")
     print(f"checkpoint_dir:  {config.checkpoint_dir}")
     print("="*60)
