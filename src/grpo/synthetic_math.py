@@ -19,10 +19,9 @@ import random
 
 
 PROMPT_TEMPLATE = (
-    "Solve the problem step by step.\n"
-    "End your answer exactly as:\n"
-    "Final answer: <number>\n\n"
-    "Problem: {question}"
+    "Solve the problem step by step.\n\n"
+    "Problem: {question}\n\n"
+    "The answer is:"
 )
 
 
@@ -124,7 +123,7 @@ def make_eval_set(stage: str, n: int = 100, seed: int = 1234) -> list[tuple[str,
     prompts = []
     for _ in range(n):
         prompts.append(make_prompt(stage, fixed_rng))
-        
+
     return prompts
 
 

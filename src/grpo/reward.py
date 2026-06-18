@@ -19,7 +19,11 @@ import re
 #
 # Does not handle fractions yet; keep first version simple.
 NUMBER_PATTERN = r"[+-]?\d[\d,]*(?:\.\d+)?"
-STRICT_PATTERN = rf"\bFinal\s+answer\s*:\s*({NUMBER_PATTERN})\b"
+STRICT_PATTERNS = [
+    r"Final answer:\s*(-?\d+(?:\.\d+)?)",
+    r"The answer is:?\s*(-?\d+(?:\.\d+)?)",
+    r"=\s*(-?\d+(?:\.\d+)?)\s*$",  # trailing "= 11" at end of line
+]
 LENIENT_PATTERN = NUMBER_PATTERN
 
 
