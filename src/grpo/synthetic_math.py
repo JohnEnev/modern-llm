@@ -25,23 +25,14 @@ PROMPT_TEMPLATE = (
 )
 
 
-def make_single_digit_addsub(rng: random.Random) -> tuple[str, float]:
-    """Single-digit addition or subtraction, e.g. '7 + 4' or '9 - 3'.
-
-    Returns:
-        (question_text, answer) — question_text is just "What is X + Y?",
-        NOT yet wrapped in PROMPT_TEMPLATE (that happens in make_prompt below).
-    """
+def make_single_digit_addsub(rng):
     X = rng.randint(0, 9)
     Y = rng.randint(0, 9)
     sign = "+" if rng.random() < 0.5 else "-"
-
+    if sign == "-" and Y > X:
+        X, Y = Y, X  # swap so result is non-negative
     question_text = f"What is {X} {sign} {Y}?"
-    if sign == "+":
-        answer = X + Y
-    else:
-        answer = X - Y
-    
+    answer = X + Y if sign == "+" else X - Y
     return (question_text, answer)
 
 
