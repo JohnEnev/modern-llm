@@ -213,7 +213,7 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str,
                         default="/workspace/checkpoints_sft/sft_final_v1v2.pt")
     parser.add_argument("--stage", type=str, default="single_digit",
-                        choices=["single_digit", "two_digit", "multiplication", "percentage"])
+                        choices=["addition_easy", "single_digit", "two_digit", "multiplication", "percentage"])
     parser.add_argument("--n-prompts", type=int, default=20)
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--max-new-tokens", type=int, default=128)

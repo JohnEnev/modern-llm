@@ -24,6 +24,18 @@ PROMPT_TEMPLATE = (
     "The answer is:"
 )
 
+def make_addition_easy(rng: random.Random) -> tuple[str, float]:
+    """Easiest stage: addition only, both operands in [0, 5], result in [0, 10].
+
+    Deliberately the gentlest possible arithmetic — addition (no subtraction,
+    no negatives), small operands, results in the range the SFT model already
+    handles most reliably. Used as a GRPO warm-up stage to keep the all-zero
+    group rate low enough that there's a usable learning signal from the start.
+    """
+    X = rng.randint(0, 5)
+    Y = rng.randint(0, 5)
+    question_text = f"What is {X} + {Y}?"
+    return (question_text, X + Y)
 
 def make_single_digit_addsub(rng):
     X = rng.randint(0, 9)
@@ -87,6 +99,7 @@ def make_percentage(rng: random.Random) -> tuple[str, float]:
 
 # Maps a curriculum stage name to its generator function.
 STAGE_GENERATORS = {
+    "addition_easy": make_addition_easy,
     "single_digit": make_single_digit_addsub,
     "two_digit": make_two_digit_addsub,
     "multiplication": make_small_multiplication,
