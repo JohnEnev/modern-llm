@@ -24,10 +24,12 @@ except ImportError:
 @dataclass
 class SFTConfig:
     # Base model to start from
-    base_checkpoint: str = "checkpoints/step_020000.pt"
+    base_checkpoint: str = "/workspace/v2_no_mhc_b32_20k/step_020000.pt"
     
     # Output
-    checkpoint_dir: str = "/workspace/checkpoints_sft"
+    checkpoint_dir: str = "/workspace/checkpoints_sft_v2"
+
+    use_ema_checkpoint: bool = True
     
     # Data — mix of general, math, code
     # Ratios: 59% OpenHermes, ~39% MetaMath, ~0.7% GSM8K, ~2% CodeAlpaca
@@ -94,8 +96,8 @@ def sft_loss(logits, targets, loss_mask):
     masked_targets[loss_mask == -100] = -100
     
     return F.cross_entropy(
-        logits.view(-1, logits.size(-1)),
-        masked_targets.view(-1),
+        logits.reshape(-1, logits.size(-1)),
+        masked_targets.reshape(-1),
         ignore_index=-100
     )
 
@@ -135,7 +137,7 @@ def sft_train(config: SFTConfig):
     
     # Initialize wandb
     if HAS_WANDB:
-        wandb.init(project="llm-350m-sft", config=vars(config))
+        wandb.init(project="llm-350m-sft", name="sft_v2", config=vars(config))
     
     # Load base model
     model_config = GPTConfig(
@@ -143,16 +145,24 @@ def sft_train(config: SFTConfig):
         d_model=1024,
         n_layers=24,
         n_heads=16,
-        n_kv_heads=16,
+        n_kv_heads=4,          # GQA — the V2 change
         dropout=0.0,
-        max_seq_len=1024,
+        max_seq_len=config.max_seq_len,
         use_flash=True,
         tie_weights=True,
-        use_qk_norm=False,
-        use_diff_attn=False,
+        use_qk_norm=True,
+        use_diff_attn=True,
         use_mhc=False,
+        n_streams=2,           # ignored when use_mhc=False, kept to match base config
     )
     model = GPT(model_config).to(device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {n_params:,}")
+    assert 314_000_000 < n_params < 317_000_000, (
+        f"Unexpected param count {n_params:,} — expected ~315.76M for V2. "
+        f"Check architecture config (did n_kv_heads/diff_attn get set right?)."
+    )
     
     # Resume from latest checkpoint if one exists (e.g., after a crash)
     resume_path = None
@@ -170,7 +180,9 @@ def sft_train(config: SFTConfig):
     else:
         print(f"Loading base model from {config.base_checkpoint}...")
         checkpoint = torch.load(config.base_checkpoint, weights_only=False)
-        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["model_weights"].items()}
+        state_key = "ema" if config.use_ema_checkpoint else "model_weights"
+        print(f"Loading '{state_key}' weights from base checkpoint...")
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in checkpoint[state_key].items()}
         model.load_state_dict(state_dict)
         start_step = 0
         print("✓ Base model loaded")
@@ -249,20 +261,27 @@ def sft_train(config: SFTConfig):
         optimizer.step()
         
         step_time = time.time() - t_start
+
+        completed_step = step + 1
         
-        if step % config.log_interval == 0:
+        if completed_step % config.log_interval == 0:
             print(
-                f"Step {step:>6d} | Loss {running_loss:.4f} | "
+                f"Step {completed_step:>6d} | Loss {running_loss:.4f} | "
                 f"LR {lr:.2e} | Grad Norm {grad_norm:.2f} | dt {step_time*1000:.0f}ms"
             )
             if HAS_WANDB:
-                wandb.log({"train/loss": running_loss, "train/lr": lr}, step=step)
+                wandb.log({
+                    "train/loss": running_loss,
+                    "train/lr": lr,
+                    "train/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
+                    "train/step_time_ms": step_time * 1000,
+                }, step=step)
         
-        if step > 0 and step % config.save_interval == 0:
-            save_sft_checkpoint(model, optimizer, step, config.checkpoint_dir)
+        if completed_step % config.save_interval == 0:
+            save_sft_checkpoint(model, optimizer, completed_step, config.checkpoint_dir)
     
     # Final save
-    path = os.path.join(config.checkpoint_dir, "sft_final_v1v2.pt")  # rename so it doesn't clobber V1 sft_final
+    path = os.path.join(config.checkpoint_dir, "sft_final_v2.pt")  # rename so it doesn't clobber V1 sft_final
     torch.save({
         "model_weights": model.state_dict(),
         "step": total_steps,
