@@ -92,7 +92,7 @@ class GRPOConfig:
 # Model loading — provided, no TODOs here
 # ---------------------------------------------------------------------------
 
-def build_model(config: GRPOConfig) -> GPT:
+def build_model(config: GRPOConfig, checkpoint_path: str | None = None) -> GPT:
     model_config = GPTConfig(
         vocab_size=config.vocab_size,
         d_model=config.d_model,
@@ -108,7 +108,8 @@ def build_model(config: GRPOConfig) -> GPT:
         use_mhc=config.use_mhc,
     )
     model = GPT(model_config)
-    ckpt = torch.load(config.checkpoint, weights_only=False, map_location=config.device)
+    path = checkpoint_path if checkpoint_path is not None else config.checkpoint
+    ckpt = torch.load(path, weights_only=False, map_location=config.device)
     state_key = "model_weights" if "model_weights" in ckpt else "ema"
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt[state_key].items()}
     model.load_state_dict(state_dict)
@@ -455,25 +456,37 @@ def evaluate(
 # ---------------------------------------------------------------------------
 
 def train(config: GRPOConfig):
+    # Reproducibility: fix the global torch seed so weight init / any sampling
+    # that goes through torch is deterministic run-to-run.
     torch.manual_seed(42)
     device = config.device
     enc = tiktoken.get_encoding("gpt2")
+    # Dedicated RNG for prompt sampling — kept separate from the eval set's
+    # seed (1234) so training prompts and eval prompts never overlap.
     rng = random.Random(42)
 
+    # --- Load the two models ---
+    # Policy: the model we actually train. Starts from the SFT (or prev-stage) ckpt.
     print(f"Loading policy from {config.checkpoint}")
     policy_model = build_model(config)
-    policy_model.train()
+    policy_model.train()              # train mode: gradients tracked, dropout active
 
+    # Reference: a FROZEN copy of the same weights, used only as the KL anchor.
+    # It never updates — it defines "where we started" so the KL penalty can
+    # measure / limit how far the policy drifts.
     print("Loading frozen reference (same checkpoint)")
     ref_model = build_model(config)
-    ref_model.eval()
+    ref_model.eval()                 # eval mode: no dropout, deterministic
     for p in ref_model.parameters():
-        p.requires_grad_(False)
+        p.requires_grad_(False)      # no grads ever flow into the reference
 
     print(f"  Params: {sum(p.numel() for p in policy_model.parameters()):,}")
     print(f"  Stage={config.stage} | N={config.num_prompts} | K={config.k} | "
           f"lr={config.lr} | beta={config.kl_beta} | steps={config.max_steps}")
 
+    # AdamW over ONLY the policy's parameters (ref isn't passed in, so it can't
+    # be updated). betas (0.9, 0.95) is the common LLM setting (slightly lower
+    # beta2 than the 0.999 default for more responsive second-moment estimates).
     optimizer = torch.optim.AdamW(
         policy_model.parameters(),
         lr=config.lr,
@@ -481,6 +494,7 @@ def train(config: GRPOConfig):
         betas=(0.9, 0.95),
     )
 
+    # Start a wandb run for this stage (separate project from pretrain/SFT).
     if HAS_WANDB:
         wandb.init(
             project="llm-350m-grpo",
@@ -488,29 +502,42 @@ def train(config: GRPOConfig):
             config=vars(config),
         )
 
+    # ===================== main training loop =====================
     for step in range(config.max_steps):
-        t0 = time.time()
+        t0 = time.time()             # for per-step wall-clock timing
 
-        # Linear LR warmup
+        # Linear LR warmup: ramp from ~0 up to full lr over warmup_steps, then
+        # hold flat (the min(1.0, ...) caps the ramp at 1.0). Warmup matters in
+        # RL because early gradient estimates from few samples are noisy — you
+        # don't want a big step on a bad estimate.
         lr = config.lr * min(1.0, (step + 1) / max(1, config.warmup_steps))
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
-        optimizer.zero_grad()
+        optimizer.zero_grad()        # clear grads from the previous step
+
+        # The heart of GRPO: sample prompts, generate K completions each, score
+        # them, compute group-normalized advantages, and return the loss.
         loss, metrics = grpo_step(policy_model, ref_model, enc, config, rng, device)
 
+        # grpo_step returns (None, None) if every group was degenerate (no valid
+        # completions to train on this step) — skip rather than crash.
         if loss is None:
             print(f"Step {step:>4d}: no valid completions, skipping")
             continue
 
-        loss.backward()
+        loss.backward()              # backprop through the policy only
+        # Clip gradient norm: important in RL where an occasional high-advantage
+        # completion can produce a huge gradient. Returns the PRE-clip norm so
+        # we can watch it (spikes signal instability).
         grad_norm = torch.nn.utils.clip_grad_norm_(
             policy_model.parameters(), config.grad_clip
         )
-        optimizer.step()
+        optimizer.step()             # apply the update
 
-        dt = time.time() - t0
+        dt = time.time() - t0        # wall-clock for this step
 
+        # --- Logging (every log_interval steps) ---
         if step % config.log_interval == 0:
             print(
                 f"Step {step:>4d} | loss {metrics['loss']:.4f} | "
@@ -532,15 +559,19 @@ def train(config: GRPOConfig):
                     "train/strict_rate": metrics["strict_rate"],
                     "train/lenient_rate": metrics["lenient_rate"],
                     "train/completion_len_mean": metrics["completion_len_mean"],
+                    # grad_norm may be a tensor or float depending on torch version
                     "train/grad_norm": grad_norm.item()
                         if torch.is_tensor(grad_norm) else grad_norm,
                     "train/lr": lr,
                 }, step=step)
 
+        # --- Held-out evaluation (every eval_interval steps, skip step 0) ---
+        # This is the REAL signal: train reward can climb from reward-hacking,
+        # but eval accuracy on unseen problems climbing is the genuine result.
         if step > 0 and step % config.eval_interval == 0:
-            policy_model.eval()
+            policy_model.eval()      # switch to eval mode for stable generation
             eval_metrics = evaluate(policy_model, enc, config, device)
-            policy_model.train()
+            policy_model.train()     # switch back to resume training
             print(
                 f"  >>> EVAL @ {step}: "
                 f"reward {eval_metrics['eval/reward_mean']:.3f} | "
@@ -550,6 +581,7 @@ def train(config: GRPOConfig):
             if HAS_WANDB:
                 wandb.log(eval_metrics, step=step)
 
+        # --- Periodic checkpoint (every save_interval steps, skip step 0) ---
         if step > 0 and step % config.save_interval == 0:
             os.makedirs(config.checkpoint_dir, exist_ok=True)
             path = os.path.join(

@@ -18,6 +18,8 @@ Run:
 
 import os
 import argparse
+import random
+import time
 from dataclasses import dataclass, field
 
 import torch
@@ -175,7 +177,6 @@ def check_stall(eval_history: list[float], cc: CurriculumConfig) -> bool:
 
 def resolve_reference_checkpoint(
     cc: CurriculumConfig,
-    stage_idx: int,
     prev_stage_final: str | None,
 ) -> str:
     """Decide which checkpoint the frozen KL reference should load.
@@ -187,17 +188,17 @@ def resolve_reference_checkpoint(
 
     Returns the checkpoint path to use for the reference model.
     """
-    
+
     if cc.ref_mode == "fixed_sft":
         return cc.base_checkpoint
     elif cc.ref_mode == "chained":
-        return prev_stage_final if prev_stage_final else cc.base_checkpoint
+        return prev_stage_final if prev_stage_final is not None else cc.base_checkpoint
     else:
-        raise ValueError
+        raise ValueError(f"Unknown ref_mode: {cc.ref_mode!r} (expected 'fixed_sft' or 'chained')")
 
 
 # ---------------------------------------------------------------------------
-# TODO 4 — single-stage training loop with mastery/stall checks
+# Single-stage training loop with mastery/stall checks
 # ---------------------------------------------------------------------------
 
 def run_stage(
@@ -216,65 +217,215 @@ def run_stage(
     This is essentially the train() loop from grpo_train.py, BUT instead of
     always running max_steps, it checks mastery/stall after each eval and
     exits early when appropriate.
-
-    TODOs:
-        1. Build the stage GRPOConfig via make_stage_config.
-        2. Load policy from policy_checkpoint (build_model with policy cfg).
-           Load reference from ref_checkpoint (build_model, then freeze:
-           .eval() + requires_grad_(False) on all params).
-           NOTE: build_model currently loads cc.checkpoint for the model it
-           builds — you'll need policy and ref to load DIFFERENT checkpoints.
-           Either temporarily set config.checkpoint before each build_model
-           call, or refactor build_model to take an explicit path.
-        3. Create the AdamW optimizer over policy params only.
-        4. (optional) wandb.init for this stage.
-        5. Loop up to cc.max_steps_per_stage:
-           - grpo_step -> loss, metrics  (skip if loss is None)
-           - loss.backward(); clip grads; optimizer.step(); zero_grad()
-           - log metrics every step
-           - every cc.eval_every steps:
-               * run evaluate(...) -> eval_metrics
-               * append eval_metrics[cc.mastery_metric] to eval_history
-               * if check_mastery(eval_history, cc): save + return ("mastered", path)
-               * elif check_stall(eval_history, cc): save + return ("stalled", path)
-        6. If the loop finishes without early exit, save + return ("max_steps", path).
-
-        Save the final checkpoint as
-        os.path.join(stage_dir, f"grpo_final_{stage}.pt").
     """
-    # TODO: implement the single-stage loop
-    raise NotImplementedError
+
+    config = make_stage_config(cc, stage, policy_checkpoint, stage_dir)
+
+    torch.manual_seed(42)
+    device = config.device
+    rng = random.Random(42)
+
+    print(f"Loading policy from {config.checkpoint}")
+    policy_model = build_model(config, policy_checkpoint)
+    policy_model.train()
+
+    print(f"Loading frozen reference from {ref_checkpoint}")
+    ref_model = build_model(config, ref_checkpoint)
+    ref_model.eval()
+    for p in ref_model.parameters():
+        p.requires_grad_(False)
+
+    print(f"  Params: {sum(p.numel() for p in policy_model.parameters()):,}")
+    print(f"  Stage={config.stage} | N={config.num_prompts} | K={config.k} | "
+          f"lr={config.lr} | beta={config.kl_beta} | steps={config.max_steps}")
+
+    optimizer = torch.optim.AdamW(
+        policy_model.parameters(),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
+        betas=(0.9, 0.95),
+    )
+
+    if HAS_WANDB:
+        wandb.init(
+            project="llm-350m-grpo",
+            name=config.run_name,
+            config=vars(config),
+        )
+
+    eval_history = []
+
+    for step in range(config.max_steps):
+        t0 = time.time()
+
+        # Linear LR warmup
+        lr = config.lr * min(1.0, (step + 1) / max(1, config.warmup_steps))
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr
+
+        optimizer.zero_grad()
+        loss, metrics = grpo_step(policy_model, ref_model, enc, config, rng, device)
+
+        if loss is None:
+            print(f"Step {step:>4d}: no valid completions, skipping")
+            continue
+
+        loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            policy_model.parameters(), config.grad_clip
+        )
+        optimizer.step()
+
+        dt = time.time() - t0
+
+        if step % config.log_interval == 0:
+            print(
+                f"Step {step:>4d} | loss {metrics['loss']:.4f} | "
+                f"pg {metrics['pg_loss']:.4f} | kl {metrics['kl_loss']:.4f} | "
+                f"reward {metrics['reward_mean']:.3f} | "
+                f"zero_grp {metrics['all_zero_group_rate']:.2f} | "
+                f"strict {metrics['strict_rate']:.2f} | "
+                f"len {metrics['completion_len_mean']:.0f} | "
+                f"gn {grad_norm:.2f} | dt {dt:.1f}s"
+            )
+            if HAS_WANDB:
+                wandb.log({
+                    "train/loss": metrics["loss"],
+                    "train/pg_loss": metrics["pg_loss"],
+                    "train/kl_loss": metrics["kl_loss"],
+                    "train/reward_mean": metrics["reward_mean"],
+                    "train/reward_std": metrics["reward_std"],
+                    "train/all_zero_group_rate": metrics["all_zero_group_rate"],
+                    "train/strict_rate": metrics["strict_rate"],
+                    "train/lenient_rate": metrics["lenient_rate"],
+                    "train/completion_len_mean": metrics["completion_len_mean"],
+                    "train/grad_norm": grad_norm.item()
+                        if torch.is_tensor(grad_norm) else grad_norm,
+                    "train/lr": lr,
+                }, step=step)
+
+        if step > 0 and step % config.eval_interval == 0:
+            policy_model.eval()
+            eval_metrics = evaluate(policy_model, enc, config, device)
+            policy_model.train()
+            print(
+                f"  >>> EVAL @ {step}: "
+                f"reward {eval_metrics['eval/reward_mean']:.3f} | "
+                f"strict {eval_metrics['eval/strict_acc']:.3f} | "
+                f"any_correct {eval_metrics['eval/any_correct_acc']:.3f}"
+            )
+
+            if HAS_WANDB:
+                wandb.log(eval_metrics, step=step)
+
+            eval_history.append(eval_metrics[cc.mastery_metric])
+
+            if check_mastery(eval_history, cc):
+                path = os.path.join(stage_dir, f"grpo_final_{stage}.pt")
+                torch.save({
+                    "model_weights": policy_model.state_dict(),
+                    "step": step,
+                    "config": vars(config),
+                }, path)
+                print(f"GRPO complete. Final: {path}")
+                
+                if HAS_WANDB:
+                    wandb.finish()
+
+                return ("mastered", path)
+
+            if check_stall(eval_history, cc):
+                path = os.path.join(stage_dir, f"grpo_final_{stage}.pt")
+                torch.save({
+                    "model_weights": policy_model.state_dict(),
+                    "step": step,
+                    "config": vars(config),
+                }, path)
+                print(f"GRPO complete. Final: {path}")
+
+                if HAS_WANDB:
+                    wandb.finish()
+
+                return ("stalled", path)
+
+        if step > 0 and step % config.save_interval == 0:
+            os.makedirs(config.checkpoint_dir, exist_ok=True)
+            path = os.path.join(
+                config.checkpoint_dir, f"grpo_step_{step:06d}.pt"
+            )
+            torch.save({
+                "model_weights": policy_model.state_dict(),
+                "step": step,
+            }, path)
+            print(f"  >>> saved {path}")
+
+    # Final save
+    path = os.path.join(stage_dir, f"grpo_final_{stage}.pt")
+    torch.save({
+        "model_weights": policy_model.state_dict(),
+        "step": step,
+        "config": vars(config),
+    }, path)
+    print(f"GRPO complete. Final: {path}")
+
+    if HAS_WANDB:
+        wandb.finish()
+    
+    return ("max_steps", path)
 
 
 # ---------------------------------------------------------------------------
-# TODO 5 — curriculum driver
+# Curriculum driver
 # ---------------------------------------------------------------------------
 
 def run_curriculum(cc: CurriculumConfig):
-    """Drive the whole curriculum: stage by stage, advancing on mastery.
+    """Drive the whole curriculum: stage by stage, advancing on mastery."""
+    enc = tiktoken.get_encoding("gpt2")
+    policy_checkpoint = cc.base_checkpoint
+    prev_stage_final = None
 
-    TODOs:
-        - enc = tiktoken.get_encoding("gpt2")
-        - policy_checkpoint starts as cc.base_checkpoint
-        - prev_stage_final = None
-        - for stage_idx, stage in enumerate(cc.stages):
-            * stage_dir = os.path.join(cc.checkpoint_root, stage); makedirs
-            * ref_checkpoint = resolve_reference_checkpoint(cc, stage_idx,
-                                                            prev_stage_final)
-            * outcome, final_ckpt = run_stage(cc, stage, policy_checkpoint,
-                                              ref_checkpoint, stage_dir, enc)
-            * print the outcome for this stage
-            * if outcome == "mastered":
-                - policy_checkpoint = final_ckpt   (chain into next stage)
-                - prev_stage_final = final_ckpt
-                - continue
-              else (stalled / max_steps):
-                - if cc.on_failure == "stop": print + break
-                - else ("advance"): chain anyway and continue
-        - print a final summary of which stages were mastered
-    """
-    # TODO: implement the curriculum driver
-    raise NotImplementedError
+    results = []  # (stage, outcome) for the final summary
+
+    for stage_idx, stage in enumerate(cc.stages):
+        stage_dir = os.path.join(cc.checkpoint_root, stage)
+        os.makedirs(stage_dir, exist_ok=True)          # Create path for stage
+
+        ref_checkpoint = resolve_reference_checkpoint(
+            cc, prev_stage_final            
+        )
+
+        print(f"\n{'='*70}\nSTAGE {stage_idx+1}/{len(cc.stages)}: {stage}\n{'='*70}")
+        outcome, final_ckpt = run_stage(
+            cc, stage, policy_checkpoint, ref_checkpoint, stage_dir, enc
+        )
+        print(f"Outcome for stage '{stage}': {outcome}")
+        results.append((stage, outcome))
+
+        if outcome == "mastered":
+            # Chain this stage's weights into the next stage
+            policy_checkpoint = final_ckpt
+            prev_stage_final = final_ckpt
+        else:
+            # "stalled" or "max_steps" — Bug 3 fix: honor the on_failure flag
+            print(f"Stage '{stage}' did not reach mastery (outcome: {outcome})")
+            if cc.on_failure == "stop":
+                print("on_failure=stop -> halting curriculum.")
+                break
+            else:  # "advance"
+                print("on_failure=advance -> continuing anyway.")
+                policy_checkpoint = final_ckpt
+                prev_stage_final = final_ckpt
+
+    # Final summary
+    print(f"\n{'='*70}\nCURRICULUM SUMMARY\n{'='*70}")
+    for stage, outcome in results:
+        mark = "✓" if outcome == "mastered" else "✗"
+        print(f"  {mark} {stage:<16} {outcome}")
+    n_mastered = sum(1 for _, o in results if o == "mastered")
+    print(f"\nMastered {n_mastered}/{len(cc.stages)} stages.")
+    print(f"Final policy checkpoint: {policy_checkpoint}")
+
+
 
 
 # ---------------------------------------------------------------------------
