@@ -59,7 +59,7 @@ def compute_reward(completion: str, ground_truth: float) -> float:
     States:
         strict found + correct                  -> 1.0
         strict found + wrong                    -> 0.05
-        strict not found + lenient correct      -> 0.5
+        strict not found + lenient correct      -> 0.3
         strict not found + lenient wrong/none   -> 0.0
     """
     strict_answer = extract_strict_answer(completion)
@@ -72,7 +72,7 @@ def compute_reward(completion: str, ground_truth: float) -> float:
     lenient_answer = extract_lenient_answer(completion)
 
     if lenient_answer is not None and answers_match(lenient_answer, ground_truth):
-        return 0.5
+        return 0.3
 
     return 0.0
 

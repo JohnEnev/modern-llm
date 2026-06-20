@@ -9,6 +9,7 @@ def prepare_fineweb_edu(
     output_dir: str,
     num_tokens: int = 10_000_000_000,  # 10B tokens
     shard_size: int = 100_000_000,     # 100M tokens per shard (~200MB at uint16)
+    sample: str = "sample-100BT", 
 ):
     """Stream FineWeb-Edu, tokenize with tiktoken, save as .bin shards.
 
@@ -30,7 +31,7 @@ def prepare_fineweb_edu(
     from datasets import load_dataset
     dataset = load_dataset(
         "HuggingFaceFW/fineweb-edu",
-        name="sample-10BT",
+        name=sample,
         split="train",
         streaming=True,
     )
@@ -148,6 +149,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data/fineweb-edu")
     parser.add_argument("--num_tokens", type=int, default=10_000_000_000)
     parser.add_argument("--shard_size", type=int, default=100_000_000)
+    parser.add_argument("--sample", type=str, default="sample-100BT")
     args = parser.parse_args()
 
     if args.mode == "fineweb":
@@ -155,6 +157,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir,
             num_tokens=args.num_tokens,
             shard_size=args.shard_size,
+            sample=args.sample,
         )
     elif args.mode == "dummy":
         prepare_dummy(output_dir=args.output_dir)

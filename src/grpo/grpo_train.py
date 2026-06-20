@@ -383,7 +383,7 @@ def grpo_step(
         "reward_std": reward_std,
         "all_zero_group_rate": all_zero_groups / config.num_prompts,
         "strict_rate": sum(1 for r in all_rewards if r == 1.0) / len(all_rewards),
-        "lenient_rate": sum(1 for r in all_rewards if r == 0.5) / len(all_rewards),
+        "lenient_rate": sum(1 for r in all_rewards if r == 0.3) / len(all_rewards),
         "completion_len_mean": sum(completion_lengths) / max(1, len(completion_lengths)),
     }
     return loss, metrics
@@ -432,10 +432,10 @@ def evaluate(
         rewards.append(reward)
 
         # Tally by reward tier (strict 1.0 = correct + right format,
-        # lenient 0.5 = correct number, wrong format)
+        # lenient 0.3 = correct number, wrong format)
         if reward == 1.0:
             strict_acc += 1
-        elif reward == 0.5:
+        elif reward == 0.3:
             lenient_acc += 1
         # (no else needed — anything else just isn't counted as a hit)
 
