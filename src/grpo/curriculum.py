@@ -86,6 +86,12 @@ class CurriculumConfig:
     temperature: float = 0.8
     warmup_steps: int = 20
 
+    # Architecture (V1 defaults; override for V2)
+    n_kv_heads: int = 16
+    use_qk_norm: bool = False
+    use_diff_attn: bool = False
+    use_mhc: bool = False
+
     device: str = "cuda"
 
 
@@ -115,6 +121,10 @@ def make_stage_config(
         max_steps=cc.max_steps_per_stage,
         eval_interval=cc.eval_every,
         device=cc.device,
+        n_kv_heads=cc.n_kv_heads,
+        use_qk_norm=cc.use_qk_norm,
+        use_diff_attn=cc.use_diff_attn,
+        use_mhc=cc.use_mhc,
     )
 
 
@@ -448,6 +458,10 @@ def parse_args() -> CurriculumConfig:
     p.add_argument("--eval-every", type=int, default=50)
     p.add_argument("--on-failure", type=str, default="stop",
                    choices=["stop", "advance"])
+    p.add_argument("--n-kv-heads", type=int, default=16)
+    p.add_argument("--use-qk-norm", action="store_true")
+    p.add_argument("--use-diff-attn", action="store_true")
+    p.add_argument("--use-mhc", action="store_true")
     args = p.parse_args()
     return CurriculumConfig(
         base_checkpoint=args.base_checkpoint,
@@ -460,6 +474,10 @@ def parse_args() -> CurriculumConfig:
         stall_patience=args.stall_patience,
         eval_every=args.eval_every,
         on_failure=args.on_failure,
+        n_kv_heads=args.n_kv_heads,
+        use_qk_norm=args.use_qk_norm,
+        use_diff_attn=args.use_diff_attn,
+        use_mhc=args.use_mhc,
     )
 
 
