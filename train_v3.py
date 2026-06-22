@@ -76,6 +76,7 @@ class TrainConfig:
     # Batch
     micro_batch_size: int = 16
     grad_accum_steps: int = 32
+    target_train_tokens: int = 43_000_000_000
 
     # Optimizer
     max_lr: float = 3e-4
@@ -91,7 +92,7 @@ class TrainConfig:
 
     # Schedule
     warmup_steps: int = 1000
-    max_steps: int = 40000
+    max_steps: int = 43000
 
     # Logging / checkpointing
     log_interval: int = 10
@@ -334,6 +335,13 @@ def train(config: TrainConfig):
     # Wrap in DDP LAST (after create + compile)
     model = ddp_utils.wrap_ddp(model, local_rank, world_size)
 
+    tokens_per_step = config.micro_batch_size * config.grad_accum_steps * config.seq_len * world_size
+    computed_max_steps = config.target_train_tokens // tokens_per_step
+    if is_main:
+        print(f"tokens/step={tokens_per_step:,} | target={config.target_train_tokens:,} "
+            f"| computed max_steps={computed_max_steps:,} (config says {config.max_steps:,})")
+    config.max_steps = computed_max_steps  # override so LR schedule + loop use the right count
+
     ema = EMA(model, decay=config.ema_decay) if config.use_ema else None
 
     # ---- Data ----
@@ -523,7 +531,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", type=str, default="debug")
     parser.add_argument("--manifest-path", type=str, default="data/v3/manifest.jsonl")
-    parser.add_argument("--max-steps", type=int, default=40000)
+    parser.add_argument("--target-train-tokens", type=int, default=43_000_000_000)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--micro-batch-size", type=int, default=16)
     parser.add_argument("--grad-accum-steps", type=int, default=32)
