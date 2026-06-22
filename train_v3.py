@@ -70,7 +70,7 @@ class TrainConfig:
     run_name: str = "debug"
 
     # Data — manifest drives train/val split and source mix
-    manifest_path: str = "data/v3/manifest.jsonl"
+    manifest_path: str = "/workspace/data/v3/manifest.jsonl"
     seq_len: int = 2048
 
     # Batch
@@ -530,7 +530,7 @@ def train(config: TrainConfig):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", type=str, default="debug")
-    parser.add_argument("--manifest-path", type=str, default="data/v3/manifest.jsonl")
+    parser.add_argument("--manifest-path", type=str, default="/workspace/data/v3/manifest.jsonl")
     parser.add_argument("--target-train-tokens", type=int, default=43_000_000_000)
     parser.add_argument("--seq-len", type=int, default=2048)
     parser.add_argument("--micro-batch-size", type=int, default=16)
