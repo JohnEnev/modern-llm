@@ -14,9 +14,8 @@ lm = CustomGPTLM(model=model, device="cuda", batch_size=8, max_length=1024)
 # ONE fast task first — lambada_openai is small and quick, exercises loglikelihood.
 results = lm_eval.simple_evaluate(
     model=lm,
-    tasks=["lambada_openai"],
+    tasks=["lambada_openai", "hellaswag", "wikitext", "gsm8k"],
     num_fewshot=0,
-    limit=50,   # only 50 examples for the smoke test — fast. Remove for full run.
+    limit=50,
 )
-
 print(results["results"])
