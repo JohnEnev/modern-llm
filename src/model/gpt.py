@@ -22,6 +22,7 @@ class GPTConfig:
             use_mhc: bool = True,
             n_streams: int = 2,
             mhc_every_n_layers: int = 1,
+            use_xsa: bool = False,
     ):
         self.vocab_size = vocab_size
         self.d_model = d_model
@@ -37,6 +38,7 @@ class GPTConfig:
         self.use_mhc = use_mhc
         self.n_streams = n_streams
         self.mhc_every_n_layers = mhc_every_n_layers
+        self.use_xsa = use_xsa
         
 class GPT(nn.Module):
     """

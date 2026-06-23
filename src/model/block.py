@@ -30,7 +30,8 @@ class TransformerBlock(nn.Module):
             use_qk_norm: bool = True,
             use_diff_attn: bool = True,
             use_mhc: bool = True,
-            n_streams: int = 4
+            n_streams: int = 4,
+            use_xsa: bool = False,
     ):
         super().__init__()
 
@@ -51,6 +52,17 @@ class TransformerBlock(nn.Module):
             max_seq_len=max_seq_len,
             use_qk_norm=use_qk_norm,
             )
+        elif use_xsa:
+            self.attention = MultiHeadAttention(
+                d_model=d_model, 
+                n_heads=n_heads,
+                n_kv_heads=n_kv_heads,
+                dropout=dropout,
+                max_seq_len=max_seq_len,
+                use_flash=use_flash,
+                use_qk_norm=use_qk_norm,
+                use_xsa=True
+            )
         else:
             self.attention = MultiHeadAttention(
                 d_model=d_model, 
@@ -60,6 +72,7 @@ class TransformerBlock(nn.Module):
                 max_seq_len=max_seq_len,
                 use_flash=use_flash,
                 use_qk_norm=use_qk_norm,
+                use_xsa=False
             )
 
         # Pre-MLP Normalization

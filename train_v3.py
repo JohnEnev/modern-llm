@@ -62,6 +62,7 @@ class TrainConfig:
     tie_weights: bool = True
     use_qk_norm: bool = False
     use_diff_attn: bool = False
+    use_xsa: bool = False
     use_mhc: bool = False
     n_streams: int = 2
     mhc_every_n_layers: int = 1
@@ -297,6 +298,7 @@ def train(config: TrainConfig):
         tie_weights=config.tie_weights,
         use_qk_norm=config.use_qk_norm,
         use_diff_attn=config.use_diff_attn,
+        use_xsa=config.use_xsa,
         use_mhc=config.use_mhc,
         n_streams=config.n_streams,
         mhc_every_n_layers=config.mhc_every_n_layers,
@@ -316,6 +318,7 @@ def train(config: TrainConfig):
         print(f"max_seq_len:     {model_config.max_seq_len}")
         print(f"use_qk_norm:     {model_config.use_qk_norm}")
         print(f"use_diff_attn:   {model_config.use_diff_attn}")
+        print(f"use_xsa:         {model_config.use_xsa}")
         print(f"use_mhc:         {model_config.use_mhc}")
         if model_config.use_mhc:
             print(f"n_streams:       {model_config.n_streams}")
@@ -542,6 +545,7 @@ def parse_args():
     parser.add_argument("--use-qk-norm", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--use-diff-attn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--use-mhc", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-xsa", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--n-streams", type=int, default=2)
     parser.add_argument("--mhc-every-n-layers", type=int, default=1)
     parser.add_argument("--use-muon", action=argparse.BooleanOptionalAction, default=True)

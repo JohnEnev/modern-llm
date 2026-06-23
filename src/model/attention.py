@@ -11,7 +11,7 @@ class MultiHeadAttention(nn.Module):
     """
 
     def __init__(self, d_model: int, n_heads: int, n_kv_heads: int = None, dropout: float = 0.0, max_seq_len: int = 2048, 
-                 use_flash: bool = True, use_qk_norm: bool = True):
+                 use_flash: bool = True, use_qk_norm: bool = True, use_xsa: bool = False):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
 
@@ -24,6 +24,7 @@ class MultiHeadAttention(nn.Module):
         self.max_seq_len = max_seq_len
         self.use_flash = use_flash
         self.use_qk_norm = use_qk_norm
+        self.use_xsa = use_xsa
 
         # Q, K, V projections
         self.W_q = nn.Linear(d_model, d_model, bias=False)
@@ -108,6 +109,17 @@ class MultiHeadAttention(nn.Module):
             if self.attn_dropout is not None:
                 attn_weights = self.attn_dropout(attn_weights)
             attn_output = torch.matmul(attn_weights, v) # [batch, n_heads, seq_len, seq_len] @ [batch, n_heads, seq_len, d_k] - > [batch, n_heads, seq_len, d_k]
+
+        # Step 5.b — Exclusive Self-Attention (XSA): remove the component of the
+        # attention output aligned with each token's own value vector.
+        # attn_output and v are both [batch, n_heads, seq_len, d_k] here.
+        # v was already GQA-expanded and transposed above, so shapes align.
+        if self.use_xsa:
+            # projection of attn_output onto v, per (batch, head, position)
+            dot = (attn_output * v).sum(dim=-1, keepdim=True) # [batch, n_heads, seq_len, 1]
+            denom = v.pow(2).sum(dim=-1, keepdim=True).clamp_min(1e-6) # [bath, n_heads, seq_len, 1]
+            projection = (dot / denom) * v # [batch, n_heads, seq_len, d_k]
+            attn_output = attn_output - projection
 
         # Step 6 - Reshape back
         attn_output = attn_output.transpose(1, 2) # [batch, seq_len, n_heads, d_k]
@@ -546,8 +558,70 @@ def test_differential_attention():
 
     print("✓ DifferentialAttention tests passed!")
 
+def test_xsa():
+    """Test Exclusive Self-Attention (XSA) variant of MultiHeadAttention."""
+    print("\nTesting XSA (Exclusive Self-Attention)...")
+
+    batch_size = 2
+    seq_len = 10
+    d_model = 512
+    n_heads = 8
+
+    # 1. XSA forward pass (standard, no GQA)
+    attn_xsa = MultiHeadAttention(
+        d_model=d_model, n_heads=n_heads, n_kv_heads=None,
+        dropout=0.0, use_flash=True, use_qk_norm=True, use_xsa=True,
+    )
+    x = torch.randn(batch_size, seq_len, d_model)
+    out = attn_xsa(x)
+    assert out.shape == (batch_size, seq_len, d_model), f"got {out.shape}"
+    assert not torch.isnan(out).any(), "XSA output contains NaNs"
+    print("✓ XSA output shape correct, no NaNs")
+
+    # 2. XSA with GQA (the critical path — v must be repeated to n_heads
+    #    before the projection subtraction)
+    attn_xsa_gqa = MultiHeadAttention(
+        d_model=d_model, n_heads=n_heads, n_kv_heads=2,
+        dropout=0.0, use_flash=True, use_qk_norm=True, use_xsa=True,
+    )
+    out_gqa = attn_xsa_gqa(x)
+    assert out_gqa.shape == (batch_size, seq_len, d_model), f"got {out_gqa.shape}"
+    assert not torch.isnan(out_gqa).any(), "XSA GQA output contains NaNs"
+    print("✓ XSA GQA output shape correct, no NaNs")
+
+    # 3. Gradient flow
+    attn_xsa.train()
+    x_grad = torch.randn(1, seq_len, d_model, requires_grad=True)
+    loss = attn_xsa(x_grad).sum()
+    loss.backward()
+    assert x_grad.grad is not None and not torch.isnan(x_grad.grad).any()
+    print("✓ XSA gradients flow correctly")
+
+    # 4. Causality preserved — the projection subtraction is per-position,
+    #    so changing a future token must not affect earlier outputs.
+    assert_no_future_leak(attn_xsa, d_model=d_model, seq_len=seq_len, atol=1e-5)
+    print("✓ XSA causal mask prevents future-token leakage")
+    assert_no_future_leak(attn_xsa_gqa, d_model=d_model, seq_len=seq_len, atol=1e-5)
+    print("✓ XSA GQA causal mask prevents future-token leakage")
+
+    # 5. XSA actually changes the output (it's not a no-op vs plain attention)
+    attn_plain = MultiHeadAttention(
+        d_model=d_model, n_heads=n_heads, n_kv_heads=None,
+        dropout=0.0, use_flash=True, use_qk_norm=True, use_xsa=False,
+    )
+    # copy weights so only XSA differs
+    attn_plain.load_state_dict(attn_xsa.state_dict())
+    attn_xsa.eval(); attn_plain.eval()
+    with torch.no_grad():
+        diff = (attn_xsa(x) - attn_plain(x)).abs().max().item()
+    assert diff > 1e-4, f"XSA output identical to plain (diff={diff}) — XSA not applied!"
+    print(f"✓ XSA meaningfully changes output (max diff vs plain: {diff:.4f})")
+
+    print("✓ XSA tests passed!")
+
 
 
 if __name__ == "__main__":
     test_attention()
     test_differential_attention()
+    test_xsa()
