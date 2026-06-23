@@ -72,6 +72,7 @@ class GPT(nn.Module):
                 use_flash=config.use_flash,
                 use_qk_norm=config.use_qk_norm,
                 use_diff_attn=config.use_diff_attn, 
+                use_xsa=config.use_xsa,
                 use_mhc=config.use_mhc and (i % config.mhc_every_n_layers == 0),
                 n_streams = config.n_streams,
             )
@@ -400,6 +401,24 @@ def test_gpt_mhc_model():
 
     print("✓ GPT with mHC works")
 
+def test_xsa_propagates():
+    """Ensure use_xsa actually reaches the attention modules (GPT->Block->Attn)."""
+    from .attention import MultiHeadAttention
+    config = GPTConfig(
+        vocab_size=1000, d_model=256, n_layers=4, n_heads=8, n_kv_heads=2,
+        dropout=0.0, max_seq_len=128, use_flash=True, tie_weights=True,
+        use_qk_norm=True, use_diff_attn=False, use_xsa=True, use_mhc=False,
+    )
+    model = GPT(config)
+    xsa_count = 0
+    for block in model.blocks:
+        attn = block.attention
+        assert isinstance(attn, MultiHeadAttention), f"expected MHA, got {type(attn)}"
+        assert attn.use_xsa is True, "use_xsa did NOT propagate to attention module!"
+        xsa_count += 1
+    assert xsa_count == config.n_layers
+    print(f"✓ use_xsa propagates to all {xsa_count} attention modules")
+
 
 def run_all_tests():
     """Run all GPT tests."""
@@ -410,6 +429,7 @@ def run_all_tests():
     test_gpt_model()
     test_full_350m_model()
     test_gpt_mhc_model()
+    test_xsa_propagates()
     
     print("\n" + "="*70)
     print(" "*15 + "ALL GPT MODEL TESTS PASSED! 🎉")
