@@ -231,7 +231,7 @@ class CustomGPTLM(LM):
 
             # Nothing to score if fewer than 2 tokens.
             if len(tokens) < 2:
-                results.append((0.0,))
+                results.append(0.0)
                 continue
 
             total_logprob = 0.0
@@ -277,7 +277,7 @@ class CustomGPTLM(LM):
                 # so its first scored token has context.
                 start = end - 1
 
-            results.append((total_logprob,))
+            results.append(total_logprob)
 
         return results
         
