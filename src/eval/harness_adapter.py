@@ -111,7 +111,7 @@ class CustomGPTLM(LM):
                  max_length: int = 1024):
         super().__init__()
         self.model = model
-        self.device = device
+        self._device = device
         self._batch_size = batch_size
         self.max_length = max_length
         self.enc = tiktoken.get_encoding("gpt2")
@@ -181,7 +181,7 @@ class CustomGPTLM(LM):
             input_ids = torch.tensor(
                 input_tokens,
                 dtype=torch.long,
-                device=self.device,
+                device=self._device,
             ).unsqueeze(0)
 
             logits, _ = self.model(input_ids)
@@ -194,14 +194,14 @@ class CustomGPTLM(LM):
             targets = torch.tensor(
                 continuation_enc,
                 dtype=torch.long,
-                device=self.device,
+                device=self._device,
             ).unsqueeze(-1)
 
             token_logprobs = cont_log_probs.gather(dim=-1, index=targets).squeeze(-1)
             total_logprob = float(token_logprobs.sum().item())
 
             greedy_tokens = cont_log_probs.argmax(dim=-1)
-            actual_tokens = torch.tensor(continuation_enc, dtype=torch.long, device=self.device)
+            actual_tokens = torch.tensor(continuation_enc, dtype=torch.long, device=self._device)
 
             is_greedy = bool((greedy_tokens == actual_tokens).all())
 
@@ -252,7 +252,7 @@ class CustomGPTLM(LM):
                 input_ids = torch.tensor(
                     chunk,
                     dtype=torch.long,
-                    device=self.device,
+                    device=self._device,
                 ).unsqueeze(0)  # [1, T]
 
                 logits, _ = self.model(input_ids)  # [1, T, vocab]
@@ -264,7 +264,7 @@ class CustomGPTLM(LM):
                 targets = torch.tensor(
                     chunk[1:],
                     dtype=torch.long,
-                    device=self.device,
+                    device=self._device,
                 ).unsqueeze(-1)  # [T-1, 1]
 
                 token_logprobs = log_probs.gather(dim=-1, index=targets).squeeze(-1)
@@ -329,7 +329,7 @@ class CustomGPTLM(LM):
             max_gen = int(gen_kwargs_dict.get("max_gen_toks", 256))
             temperature = float(gen_kwargs_dict.get("temperature", 0.0))
 
-            input_ids = torch.tensor(context_enc, dtype=torch.long, device=self.device).unsqueeze(0) # [1, T]
+            input_ids = torch.tensor(context_enc, dtype=torch.long, device=self._device).unsqueeze(0) # [1, T]
 
             generated_ids: list[int] = []
             generated_text = ""
