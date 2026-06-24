@@ -396,8 +396,8 @@ def train(config: TrainConfig):
         if ema and "ema" in checkpoint:
             ema.load_state_dict(checkpoint["ema"])
         start_step = checkpoint["step"]
-        torch.random.set_rng_state(checkpoint["rng_state"])
-        torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+        torch.random.set_rng_state(checkpoint["rng_state"].cpu())
+        torch.cuda.set_rng_state(checkpoint["cuda_rng_state"].cpu())
         if is_main:
             print(f"✓ Resumed from {latest_ckpt} (step {start_step})")
     elif is_main:
