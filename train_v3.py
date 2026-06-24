@@ -7,6 +7,7 @@ import math
 import copy
 import glob
 import argparse
+import tempfile
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass
@@ -154,7 +155,9 @@ def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=No
     if ema:
         checkpoint["ema"] = ema.state_dict()
 
-    torch.save(checkpoint, path)
+    tmp_path = path + ".tmp"
+    torch.save(checkpoint, tmp_path)
+    os.replace(tmp_path, path)   # atomic on the same filesystem
     print(f"  >>> Saved checkpoint: {path}")
 
     # Keep only the most recent N checkpoints.
@@ -168,10 +171,17 @@ def save_checkpoint(model, muon_optimizer, adamw_optimizer, step, config, ema=No
 
 
 def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
-    checkpoints = glob.glob(os.path.join(checkpoint_dir, "step_*.pt"))
-    if not checkpoints:
-        return None
-    return max(checkpoints)
+    checkpoints = sorted(glob.glob(os.path.join(checkpoint_dir, "step_*.pt")))
+    # try newest-first; skip any that are corrupt/unreadable
+    for ckpt in reversed(checkpoints):
+        try:
+            # quick integrity check: can we open the zip?
+            torch.load(ckpt, weights_only=False, map_location="cpu")
+            return ckpt
+        except Exception as e:
+            print(f"  >>> Skipping corrupt checkpoint {ckpt}: {e}")
+            continue
+    return None
 
 
 @torch.no_grad()
