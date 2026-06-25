@@ -34,7 +34,7 @@ def build_model(state, device):
     )
     model = GPT(config)
     # weights were saved from a torch.compile'd module -> strip _orig_mod.
-    clean = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+    clean = {k.replace("module.", "").replace("_orig_mod.", ""): v for k, v in state.items()}
     missing, unexpected = model.load_state_dict(clean, strict=False)
     if missing:
         print(f"  [warn] missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
