@@ -12,7 +12,7 @@ import json
 import lm_eval
 from src.eval.harness_adapter import CustomGPTLM, build_eval_model
 
-CHECKPOINT = "/workspace/checkpoints_sft_v3/sft_final_v3.pt"
+CHECKPOINT = "/workspace/checkpoints_grpo_v3/percentage/grpo_final_percentage.pt"
 DEVICE = "cuda"
 BATCH_SIZE = 8
 
@@ -75,7 +75,7 @@ def main():
                 print(f"  {metric}: {value}")
 
     # Save full results json for the blog / comparison table
-    out_path = "/workspace/eval_v3_sft_results.json"
+    out_path = "/workspace/eval_v3_grpo_results.json"
     with open(out_path, "w") as f:
         json.dump(results["results"], f, indent=2, default=str)
     print(f"\n>>> Full results saved to {out_path}")
