@@ -2,7 +2,7 @@
 
 Three-tier reward scheme:
     1.0  -> correct answer, found via the STRICT "Final answer: X" parser
-    0.5  -> correct answer, found only via the LENIENT fallback parser
+    0.3  -> correct answer, found only via the LENIENT fallback parser
     0.05 -> strict format present, but the answer is WRONG
     0.0  -> no parseable answer at all, or lenient answer is wrong
 """
@@ -130,7 +130,7 @@ def test_reward():
     assert compute_reward(
         "We calculate 5 + 7. Therefore the answer is 12.",
         12,
-    ) == 0.5
+    ) == 0.3
 
     # Tolerance
     assert compute_reward("Final answer: 12.00001", 12) == 1.0

@@ -46,9 +46,9 @@ except ImportError:
 
 @dataclass
 class CurriculumConfig:
-    base_checkpoint: str = "/workspace/checkpoints_sft/sft_final_v1v2.pt"
-    checkpoint_root: str = "/workspace/checkpoints_grpo_v1"
-    run_prefix: str = "grpo_v1"
+    base_checkpoint: str = "/workspace/checkpoints_sft_v3/sft_final_v3.pt"
+    checkpoint_root: str = "/workspace/checkpoints_grpo_v3"
+    run_prefix: str = "grpo_v3"
 
     # Stage ladder, easiest -> hardest
     stages: list = field(default_factory=lambda: [
@@ -86,10 +86,11 @@ class CurriculumConfig:
     temperature: float = 0.8
     warmup_steps: int = 20
 
-    # Architecture (V1 defaults; override for V2)
-    n_kv_heads: int = 16
-    use_qk_norm: bool = False
+    # Architecture (V3 defaults; override for V2)
+    n_kv_heads: int = 3
+    use_qk_norm: bool = True
     use_diff_attn: bool = False
+    use_xsa: bool = True
     use_mhc: bool = False
 
     device: str = "cuda"
@@ -124,6 +125,7 @@ def make_stage_config(
         n_kv_heads=cc.n_kv_heads,
         use_qk_norm=cc.use_qk_norm,
         use_diff_attn=cc.use_diff_attn,
+        use_xsa=cc.use_xsa,
         use_mhc=cc.use_mhc,
     )
 
@@ -239,6 +241,11 @@ def run_stage(
     policy_model = build_model(config, policy_checkpoint)
     policy_model.train()
 
+    n_params = sum(p.numel() for p in policy_model.parameters())
+    assert 671_000_000 < n_params < 673_000_000, (
+        f"Unexpected param count {n_params:,} — expected ~671.9M for V3."
+    )
+
     print(f"Loading frozen reference from {ref_checkpoint}")
     ref_model = build_model(config, ref_checkpoint)
     ref_model.eval()
@@ -258,7 +265,7 @@ def run_stage(
 
     if HAS_WANDB:
         wandb.init(
-            project="llm-350m-grpo",
+            project="llm-672m-grpo",
             name=config.run_name,
             config=vars(config),
         )
@@ -445,10 +452,10 @@ def run_curriculum(cc: CurriculumConfig):
 def parse_args() -> CurriculumConfig:
     p = argparse.ArgumentParser()
     p.add_argument("--base-checkpoint", type=str,
-                   default="/workspace/checkpoints_sft/sft_final_v1v2.pt")
+                   default="/workspace/checkpoints_sft_v3/sft_final_v3.pt")
     p.add_argument("--checkpoint-root", type=str,
-                   default="/workspace/checkpoints_grpo_v1")
-    p.add_argument("--run-prefix", type=str, default="grpo_v1")
+                   default="/workspace/checkpoints_grpo_v3")
+    p.add_argument("--run-prefix", type=str, default="grpo_v3")
     p.add_argument("--ref-mode", type=str, default="fixed_sft",
                    choices=["fixed_sft", "chained"])
     p.add_argument("--mastery-threshold", type=float, default=0.85)
@@ -461,6 +468,7 @@ def parse_args() -> CurriculumConfig:
     p.add_argument("--n-kv-heads", type=int, default=16)
     p.add_argument("--use-qk-norm", action="store_true")
     p.add_argument("--use-diff-attn", action="store_true")
+    p.add_argument("--use-xsa", action="store_true")
     p.add_argument("--use-mhc", action="store_true")
     args = p.parse_args()
     return CurriculumConfig(
@@ -477,6 +485,7 @@ def parse_args() -> CurriculumConfig:
         n_kv_heads=args.n_kv_heads,
         use_qk_norm=args.use_qk_norm,
         use_diff_attn=args.use_diff_attn,
+        use_xsa=args.use_xsa,
         use_mhc=args.use_mhc,
     )
 

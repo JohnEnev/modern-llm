@@ -45,8 +45,8 @@ except ImportError:
 
 @dataclass
 class GRPOConfig:
-    checkpoint: str = "/workspace/checkpoints_sft/sft_final_v1v2.pt"
-    checkpoint_dir: str = "/workspace/checkpoints_grpo"
+    checkpoint: str = "/workspace/checkpoints_sft_v3/sft_final_v3.pt"
+    checkpoint_dir: str = "/workspace/checkpoints_grp_v3"
     run_name: str = "grpo_debug"
 
     # Task
@@ -74,15 +74,16 @@ class GRPOConfig:
     eval_n: int = 100
     eval_seed: int = 1234
 
-    # V1 architecture (matches sft_final_v1v2.pt)
+    # V3 architecture (matches sft_final_v1v2.pt)
     vocab_size: int = 50304
-    d_model: int = 1024
+    d_model: int = 1536
     n_layers: int = 24
-    n_heads: int = 16
-    n_kv_heads: int = 16       # V1 — no GQA
+    n_heads: int = 12
+    n_kv_heads: int = 3     # V3 — GQA
     max_seq_len: int = 1024
-    use_qk_norm: bool = False
+    use_qk_norm: bool = True
     use_diff_attn: bool = False
+    use_xsa: bool = True
     use_mhc: bool = False
 
     device: str = "cuda"
@@ -105,6 +106,7 @@ def build_model(config: GRPOConfig, checkpoint_path: str | None = None) -> GPT:
         tie_weights=True,
         use_qk_norm=config.use_qk_norm,
         use_diff_attn=config.use_diff_attn,
+        use_xsa=config.use_xsa,
         use_mhc=config.use_mhc,
     )
     model = GPT(model_config)
@@ -497,7 +499,7 @@ def train(config: GRPOConfig):
     # Start a wandb run for this stage (separate project from pretrain/SFT).
     if HAS_WANDB:
         wandb.init(
-            project="llm-350m-grpo",
+            project="llm-672m-grpo",
             name=config.run_name,
             config=vars(config),
         )

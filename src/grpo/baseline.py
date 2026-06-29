@@ -34,19 +34,20 @@ from src.grpo.synthetic_math import make_eval_set
 # ---- Model loading -------------------------------------------------------
 
 def load_sft_model(checkpoint_path: str, device: str) -> GPT:
-    """Load a V1-architecture SFT checkpoint."""
+    """Load a V3-architecture SFT checkpoint."""
     model_config = GPTConfig(
         vocab_size=50304,
-        d_model=1024,
+        d_model=1536,
         n_layers=24,
-        n_heads=16,
-        n_kv_heads=16,   # V1 architecture — no GQA
+        n_heads=12,
+        n_kv_heads=3,   
         dropout=0.0,
         max_seq_len=1024,
         use_flash=True,
         tie_weights=True,
-        use_qk_norm=False,
+        use_qk_norm=True,
         use_diff_attn=False,
+        use_xsa=True,  
         use_mhc=False,
     )
     model = GPT(model_config)
@@ -157,7 +158,7 @@ def run_baseline(
             # Classify for summary stats
             if reward == 1.0:
                 strict_hits += 1
-            elif reward == 0.5:
+            elif reward == 0.3:
                 lenient_hits += 1
             elif reward == 0.05:
                 format_only_hits += 1
