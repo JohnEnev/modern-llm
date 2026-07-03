@@ -96,7 +96,7 @@ class TrainConfig:
 
     # Schedule
     warmup_steps: int = 1000
-    max_steps: int = 200           # approx total_tokens / tokens_per_step
+    max_steps: int = 200           # approx total_tokens / tokens_per_step - 200 for smoke test
 
     # Logging and Checkpointing
     log_interval: int = 10

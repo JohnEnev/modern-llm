@@ -20,16 +20,27 @@ env/
 
 # Training artifacts (large files)
 checkpoints/
+checkpoints*/
+outputs/
+runs/
+logs/
+eval_results/
 *.pt
 *.pth
+*.ckpt
+*.safetensors
 *.bin
 wandb/
 
 # Data (usually too large for git)
 data/raw/
 data/processed/
+data/**/*.bin
+data/**/*.jsonl
 *.parquet
 *.arrow
+*.npy
+*.npz
 
 # IDE
 .vscode/

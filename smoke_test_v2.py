@@ -8,7 +8,7 @@ at each stage, checking for:
   - reasonable grad norm (no explosion)
 
 Run this LOCALLY (CPU is fine for this tiny size) before any GPU pod.
-Place at repo root and run: python3 smoke_test.py
+Place at repo root and run: python3 smoke_test_v2.py
 """
 
 import torch
