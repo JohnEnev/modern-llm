@@ -8,6 +8,22 @@ Custom decoder-only language model experiments in PyTorch. The repository contai
 
 The codebase is research-oriented: most scripts are direct experiment entry points with architecture and data paths exposed as command-line flags or top-level config values.
 
+## Article series
+
+This repository accompanies a four-part article series about coding, training, post-training, and serving small language models from scratch.
+
+1. [Building a 350M Transformer From Scratch](https://john463212.substack.com/p/building-a-350m-transformer-from)  
+   V1: a 353M baseline transformer with attention, RoPE, RMSNorm, SwiGLU, tied embeddings, training loops, bugs, and loss curves.
+
+2. [Modernizing the Architecture](https://john463212.substack.com/p/modernizing-the-architecture)  
+   V2: GQA, QK-Norm, Muon, EMA, Differential Attention, mHC, and what did or did not earn its place.
+
+3. Post-training: SFT and GRPO  
+   Coming soon.
+
+4. Scaling and serving V3  
+   Coming soon.
+
 ## What Is In Here
 
 ```text
