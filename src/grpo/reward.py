@@ -1,6 +1,6 @@
 """Reward function for GRPO math training.
 
-Four-tier reward scheme:
+Three-tier reward scheme:
     1.0  -> correct answer, found via the STRICT "Final answer: X" parser
     0.3  -> correct answer, found only via the LENIENT fallback parser
     0.05 -> strict format present, but the answer is WRONG
