@@ -12,11 +12,16 @@ paper (arXiv 2304.01373, Table 8), not from my own runs. If I want a reference
 that went through the exact same harness as my models, --run-refs will pull
 gpt2 and pythia-410m from HF and score them here instead.
 
+Results are written to disk the moment each model finishes, not just at the
+end, so a crash while printing the table doesn't throw away 30 minutes of
+compute. Re-running with --skip-evals will pick up whatever is already on
+disk in OUTPUT_DIR rather than recomputing it.
+
     pip install lm-eval
     python run_part3_evals.py                # evals + generations
     python run_part3_evals.py --skip-evals   # generations only (quick)
     python run_part3_evals.py --skip-gen     # evals only
-    python run_part3_evals.py --run-refs     # also run gpt2 + pythia-410m locally
+    python run_part3_evals.py --skip-gen --skip-evals --run-refs   # refs only
 """
 
 import os
@@ -140,6 +145,24 @@ def metric_of(task_result):
     return float("nan")
 
 
+def result_path(name):
+    return os.path.join(OUTPUT_DIR, f"{name}.json")
+
+
+def save_result(name, data):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(result_path(name), "w") as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+def load_result_if_present(name):
+    p = result_path(name)
+    if os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    return None
+
+
 def eval_my_checkpoint(name, spec, device):
     import lm_eval
     print(f"\n{'='*70}\n{name}  {spec['path']}\n{'='*70}")
@@ -154,12 +177,9 @@ def eval_my_checkpoint(name, spec, device):
     merged = {}
     merged.update(r0["results"])
     merged.update(rg["results"])
+    save_result(name, merged)   # write immediately, don't wait for the table
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(os.path.join(OUTPUT_DIR, f"{name}.json"), "w") as f:
-        json.dump(merged, f, indent=2, default=str)
-
-    print(f"  {(time.time()-t0)/60:.1f} min")
+    print(f"  {(time.time()-t0)/60:.1f} min, saved to {result_path(name)}")
     del model, lm
     torch.cuda.empty_cache()
     return merged
@@ -190,7 +210,9 @@ def eval_hf_reference(hf_name, device):
     merged = {}
     merged.update(r0["results"])
     merged.update(rg["results"])
-    print(f"  {(time.time()-t0)/60:.1f} min")
+    safe_name = "ref_" + hf_name.replace("/", "_")
+    save_result(safe_name, merged)   # write immediately
+    print(f"  {(time.time()-t0)/60:.1f} min, saved to {result_path(safe_name)}")
     torch.cuda.empty_cache()
     return merged
 
@@ -201,10 +223,15 @@ def eval_hf_reference(hf_name, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--skip-evals", action="store_true")
-    ap.add_argument("--skip-gen", action="store_true")
+    ap.add_argument("--skip-evals", action="store_true",
+                    help="don't score my own checkpoints (v1/v2 sft/grpo)")
+    ap.add_argument("--skip-gen", action="store_true",
+                    help="don't run the before/after generations")
     ap.add_argument("--run-refs", action="store_true",
                     help="also score gpt2 and pythia-410m through this harness")
+    ap.add_argument("--use-cached", action="store_true",
+                    help="if a checkpoint's result json already exists on disk, "
+                         "load it instead of recomputing")
     args = ap.parse_args()
 
     enc = tiktoken.get_encoding("gpt2")
@@ -223,26 +250,36 @@ def main():
             torch.cuda.empty_cache()
 
     # ---- harness evals -----------------------------------------------------
+    # results and refs are independent: --skip-evals only skips my own four
+    # checkpoints, --run-refs controls the reference models. Either, both,
+    # or neither can run in a given call.
     results = {}
     if not args.skip_evals:
-        results = {name: eval_my_checkpoint(name, spec, args.device)
-                for name, spec in CHECKPOINTS.items()}
+        for name, spec in CHECKPOINTS.items():
+            cached = load_result_if_present(name) if args.use_cached else None
+            results[name] = cached if cached is not None else eval_my_checkpoint(name, spec, args.device)
+            if cached is not None:
+                print(f"  {name}: loaded cached result from {result_path(name)}")
 
     refs = {}
     if args.run_refs:
         for hf_name in ("gpt2", "EleutherAI/pythia-410m"):
-            refs[hf_name] = eval_hf_reference(hf_name, args.device)
+            safe_name = "ref_" + hf_name.replace("/", "_")
+            cached = load_result_if_present(safe_name) if args.use_cached else None
+            refs[hf_name] = cached if cached is not None else eval_hf_reference(hf_name, args.device)
+            if cached is not None:
+                print(f"  {hf_name}: loaded cached result from {result_path(safe_name)}")
 
+    # ---- table ---------------------------------------------------------
     if results or refs:
-        # ---- table ---------------------------------------------------------
         all_tasks = ZERO_SHOT_TASKS + ["gsm8k"]
-        mine = ["v1_sft", "v1_grpo", "v2_sft", "v2_grpo"]
+        mine = [m for m in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo") if m in results]
         col = lambda s: f"{str(s):>12}"
 
         header_cols = list(mine)
         if args.run_refs:
             header_cols += ["gpt2", "pythia-410m"]
-        else:
+        elif results:
             header_cols += ["pythia-410m*"]
 
         print(f"\n{'='*100}\nFINAL COMPARISON\n{'='*100}")
@@ -257,19 +294,20 @@ def main():
                 for hf_name in ("gpt2", "EleutherAI/pythia-410m"):
                     v = metric_of(refs[hf_name].get(task, {}))
                     row += col(f"{v:.4f}")
-            else:
+            elif results:
                 v = PYTHIA_410M.get(task)
                 row += col(f"{v:.4f}" if v is not None else "-")
             print(row)
 
-        if not args.run_refs:
+        if results and not args.run_refs:
             print("\n* pythia-410m column is from the Pythia paper (0-shot), not my runs.")
             print("  hellaswag/wikitext/gsm8k blank: not in that table / not comparable.")
             print("  Use --run-refs to score gpt2 + pythia-410m through this exact harness.")
 
-        with open(os.path.join(OUTPUT_DIR, "ALL.json"), "w") as f:
-            json.dump({"mine": results, "refs": refs}, f, indent=2, default=str)
+        save_result("ALL", {"mine": results, "refs": refs})
         print(f"\nSaved to {OUTPUT_DIR}/")
+    else:
+        print("\nNothing was run (both --skip-evals and no --run-refs), and no table to show.")
 
 
 if __name__ == "__main__":
