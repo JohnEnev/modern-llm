@@ -223,17 +223,17 @@ def main():
             torch.cuda.empty_cache()
 
     # ---- harness evals -----------------------------------------------------
+    results = {}
     if not args.skip_evals:
-        results = {}
-        if not args.skip_evals:
-            results = {name: eval_my_checkpoint(name, spec, args.device)
-                    for name, spec in CHECKPOINTS.items()}
+        results = {name: eval_my_checkpoint(name, spec, args.device)
+                for name, spec in CHECKPOINTS.items()}
 
-        refs = {}
-        if args.run_refs:
-            for hf_name in ("gpt2", "EleutherAI/pythia-410m"):
-                refs[hf_name] = eval_hf_reference(hf_name, args.device)
+    refs = {}
+    if args.run_refs:
+        for hf_name in ("gpt2", "EleutherAI/pythia-410m"):
+            refs[hf_name] = eval_hf_reference(hf_name, args.device)
 
+    if results or refs:
         # ---- table ---------------------------------------------------------
         all_tasks = ZERO_SHOT_TASKS + ["gsm8k"]
         mine = ["v1_sft", "v1_grpo", "v2_sft", "v2_grpo"]
