@@ -224,8 +224,10 @@ def main():
 
     # ---- harness evals -----------------------------------------------------
     if not args.skip_evals:
-        results = {name: eval_my_checkpoint(name, spec, args.device)
-                   for name, spec in CHECKPOINTS.items()}
+        results = {}
+        if not args.skip_evals:
+            results = {name: eval_my_checkpoint(name, spec, args.device)
+                    for name, spec in CHECKPOINTS.items()}
 
         refs = {}
         if args.run_refs:
