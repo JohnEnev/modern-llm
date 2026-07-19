@@ -55,9 +55,17 @@ V2_ARCH = dict(
     use_qk_norm=True, use_diff_attn=True, use_xsa=False,
 )
 
+# NOTE: confirm the two base paths below — I don't have them from you, these are
+# guesses based on the naming of the other checkpoints. The base checkpoints are
+# the pretrain outputs (pre-SFT). V2's pretrain saved an EMA copy, so use_ema=True
+# picks the EMA weights (the ones that beat the raw by 0.0036 and that SFT loaded
+# from). V1 had no EMA, so use_ema is harmless there (loader falls back to
+# model_weights). If a base run loads but scores look wrong, check use_ema first.
 CHECKPOINTS = {
+    "v1_base": dict(path="/workspace/checkpoints_v1/step_final.pt",             arch=V1_ARCH, use_ema=False),
     "v1_sft":  dict(path="/workspace/checkpoints_v1_sft/sft_final.pt",                         arch=V1_ARCH),
     "v1_grpo": dict(path="/workspace/checkpoints_grpo_v1/percentage/grpo_final_percentage.pt", arch=V1_ARCH),
+    "v2_base": dict(path="/workspace/checkpoints_v2/step_020000.pt",            arch=V2_ARCH, use_ema=True),
     "v2_sft":  dict(path="/workspace/checkpoints_sft_v2/sft_final_v2.pt",                       arch=V2_ARCH),
     "v2_grpo": dict(path="/workspace/checkpoints_grpo_v2/percentage/grpo_final_percentage.pt",  arch=V2_ARCH),
 }
@@ -168,7 +176,10 @@ def eval_my_checkpoint(name, spec, device):
     print(f"\n{'='*70}\n{name}  {spec['path']}\n{'='*70}")
     t0 = time.time()
 
-    model = build_eval_model(spec["path"], device=device, **spec["arch"])
+    load_kwargs = dict(spec["arch"])
+    if "use_ema" in spec:
+        load_kwargs["use_ema"] = spec["use_ema"]
+    model = build_eval_model(spec["path"], device=device, **load_kwargs)
     lm = CustomGPTLM(model=model, device=device, batch_size=EVAL_BATCH_SIZE, max_length=1024)
 
     r0 = lm_eval.simple_evaluate(model=lm, tasks=ZERO_SHOT_TASKS, num_fewshot=0)
@@ -232,17 +243,25 @@ def main():
     ap.add_argument("--use-cached", action="store_true",
                     help="if a checkpoint's result json already exists on disk, "
                          "load it instead of recomputing")
+    ap.add_argument("--only", nargs="+", default=None,
+                    help="restrict to these checkpoint names, e.g. --only v1_base v2_base")
     args = ap.parse_args()
 
     enc = tiktoken.get_encoding("gpt2")
 
     # ---- before/after generations ------------------------------------------
+    # Base models are intentionally NOT generated here: they don't follow the
+    # User:/Assistant: chat template, so they just autocomplete and the output
+    # isn't a meaningful before/after. Base models still get harness-scored below.
     if not args.skip_gen:
         print(f"\n{'#'*70}\n# BEFORE / AFTER GENERATIONS (greedy)\n{'#'*70}")
         for name in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo"):
             spec = CHECKPOINTS[name]
             print(f"\n----- {name} -----")
-            model = build_eval_model(spec["path"], device=args.device, **spec["arch"])
+            load_kwargs = dict(spec["arch"])
+            if "use_ema" in spec:
+                load_kwargs["use_ema"] = spec["use_ema"]
+            model = build_eval_model(spec["path"], device=args.device, **load_kwargs)
             for q in GEN_PROMPTS:
                 ans = generate(model, enc, as_chat(q), device=args.device)
                 print(f"\nQ: {q}\nA: {ans}")
@@ -255,7 +274,10 @@ def main():
     # or neither can run in a given call.
     results = {}
     if not args.skip_evals:
-        for name, spec in CHECKPOINTS.items():
+        items = CHECKPOINTS.items()
+        if args.only:
+            items = [(n, s) for n, s in CHECKPOINTS.items() if n in args.only]
+        for name, spec in items:
             cached = load_result_if_present(name) if args.use_cached else None
             results[name] = cached if cached is not None else eval_my_checkpoint(name, spec, args.device)
             if cached is not None:
@@ -273,7 +295,8 @@ def main():
     # ---- table ---------------------------------------------------------
     if results or refs:
         all_tasks = ZERO_SHOT_TASKS + ["gsm8k"]
-        mine = [m for m in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo") if m in results]
+        mine = [m for m in ("v1_base", "v1_sft", "v1_grpo",
+                            "v2_base", "v2_sft", "v2_grpo") if m in results]
         col = lambda s: f"{str(s):>12}"
 
         header_cols = list(mine)
