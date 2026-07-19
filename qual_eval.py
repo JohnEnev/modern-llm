@@ -171,7 +171,7 @@ def load_result_if_present(name):
     return None
 
 
-def eval_my_checkpoint(name, spec, device):
+def eval_my_checkpoint(name, spec, device, skip_gsm8k=False):
     import lm_eval
     print(f"\n{'='*70}\n{name}  {spec['path']}\n{'='*70}")
     t0 = time.time()
@@ -183,11 +183,16 @@ def eval_my_checkpoint(name, spec, device):
     lm = CustomGPTLM(model=model, device=device, batch_size=EVAL_BATCH_SIZE, max_length=1024)
 
     r0 = lm_eval.simple_evaluate(model=lm, tasks=ZERO_SHOT_TASKS, num_fewshot=0)
-    rg = lm_eval.simple_evaluate(model=lm, tasks=["gsm8k"], num_fewshot=GSM8K_FEWSHOT)
 
     merged = {}
     merged.update(r0["results"])
-    merged.update(rg["results"])
+
+    if not skip_gsm8k:
+        rg = lm_eval.simple_evaluate(model=lm, tasks=["gsm8k"], num_fewshot=GSM8K_FEWSHOT)
+        merged.update(rg["results"])
+    else:
+        print("  (gsm8k skipped)")
+
     save_result(name, merged)   # write immediately, don't wait for the table
 
     print(f"  {(time.time()-t0)/60:.1f} min, saved to {result_path(name)}")
@@ -245,6 +250,10 @@ def main():
                          "load it instead of recomputing")
     ap.add_argument("--only", nargs="+", default=None,
                     help="restrict to these checkpoint names, e.g. --only v1_base v2_base")
+    ap.add_argument("--skip-gsm8k", action="store_true",
+                    help="skip the gsm8k generation task. Use for base models: they "
+                         "never emit a stop sequence, so generate_until runs to the "
+                         "token cap on all ~1300 questions and takes hours for a ~0 score.")
     args = ap.parse_args()
 
     enc = tiktoken.get_encoding("gpt2")
@@ -279,7 +288,7 @@ def main():
             items = [(n, s) for n, s in CHECKPOINTS.items() if n in args.only]
         for name, spec in items:
             cached = load_result_if_present(name) if args.use_cached else None
-            results[name] = cached if cached is not None else eval_my_checkpoint(name, spec, args.device)
+            results[name] = cached if cached is not None else eval_my_checkpoint(name, spec, args.device, skip_gsm8k=args.skip_gsm8k)
             if cached is not None:
                 print(f"  {name}: loaded cached result from {result_path(name)}")
 
