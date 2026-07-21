@@ -19,9 +19,9 @@ import re
 #
 # Does not handle fractions yet; keep first version simple.
 NUMBER_PATTERN = r"[+-]?\d[\d,]*(?:\.\d+)?"
-STRICT_PATTERNS = (
-    r"(?:Final answer:|The answer is:?|=)\s*(-?\d+(?:\.\d+)?)"
-)
+
+STRICT_PATTERN = rf"(?:Final answer:|The answer is:?|=)\s*({NUMBER_PATTERN})"
+
 LENIENT_PATTERN = NUMBER_PATTERN
 
 
@@ -35,7 +35,7 @@ def extract_strict_answer(completion: str) -> float | None:
 
     Last occurrence wins because models may revise an earlier false start.
     """
-    matches = re.findall(STRICT_PATTERNS, completion, flags=re.IGNORECASE)
+    matches = re.findall(STRICT_PATTERN, completion, flags=re.IGNORECASE)
     if not matches:
         return None
     return parse_number(matches[-1])
