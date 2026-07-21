@@ -128,21 +128,29 @@ class CustomGPTLM(LM):
     # -----------------------------------------------------------------------
 
     def _encode_pair(self, context: str, continuation: str) -> tuple[list[int], list[int]]:
-        """Tokenize context+continuation JOINTLY, then split.
-
-        TODOs (the H4 fix — respects BPE merges at the boundary):
-            - context_enc = self.enc.encode(context)
-            - whole_enc   = self.enc.encode(context + continuation)
-            - continuation_enc = whole_enc[len(context_enc):]
-            - return (context_enc, continuation_enc)
-        Edge case: empty context -> context_enc == [] -> whole thing is the
-        continuation (used by loglikelihood_rolling).
+        """Tokenize context+continuation jointly, then split at the boundary.
+    
+        Handles the trailing-space case the way lm-eval's own adapters do: move
+        trailing whitespace off the context and onto the continuation before
+        encoding, so BPE merges it consistently on both sides.
         """
+        # Move any trailing whitespace from context onto the continuation.
+        n_spaces = len(context) - len(context.rstrip())
+        if n_spaces > 0:
+            continuation = context[-n_spaces:] + continuation
+            context = context[:-n_spaces]
+    
         context_enc = self.enc.encode(context)
         whole_enc = self.enc.encode(context + continuation)
-        continuation_enc = whole_enc[len(context_enc):]
-
-        return (context_enc, continuation_enc)
+    
+        # Defensive guard for any remaining non-space boundary merge: back the
+        # split point off until context_enc is a genuine prefix of whole_enc.
+        split = len(context_enc)
+        while split > 0 and whole_enc[:split] != context_enc[:split]:
+            split -= 1
+    
+        continuation_enc = whole_enc[split:]
+        return (context_enc[:split], continuation_enc)
 
     # -----------------------------------------------------------------------
     # Loglikelihood
@@ -161,7 +169,7 @@ class CustomGPTLM(LM):
             context_enc, continuation_enc = self._encode_pair(context_str, continuation_str)
 
             if len(continuation_enc) == 0:
-                logp_requests.append((0.0, True))
+                logp_requests.append((-float("inf"), False))
                 continue
 
             # For ordinary loglikelihood, give empty-context continuations an EOT prefix.
