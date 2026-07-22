@@ -212,8 +212,6 @@ def main():
         n_streams=args.n_streams,
     )
 
-    n_params = sum(p.numel() for p in model.parameters())
-
     print("=" * 80)
     print("EVAL CONFIG")
     print("=" * 80)
@@ -228,10 +226,13 @@ def main():
     print(f"use_diff_attn:    {args.use_diff_attn}")
     print(f"use_mhc:          {args.use_mhc}")
     print(f"n_streams:        {args.n_streams if args.use_mhc else 'n/a'}")
-    print(f"Parameters:       {n_params:,}")
     print("=" * 80)
 
     model = GPT(model_config).to(device)
+
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Parameters:       {n_params:,}")
 
     print("Loading checkpoint...")
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
