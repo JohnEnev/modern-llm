@@ -33,8 +33,13 @@ from src.model.mhc import MHCResidual
 
 
 def clean_state_dict(state_dict):
-    """Remove torch.compile _orig_mod. prefixes if present."""
-    return {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+    """Strip torch.compile (_orig_mod.) and DDP (module.) prefixes."""
+    out = {}
+    for k, v in state_dict.items():
+        while k.startswith("_orig_mod.") or k.startswith("module."):
+            k = k.replace("_orig_mod.", "", 1).replace("module.", "", 1)
+        out[k] = v
+    return out
 
 
 @torch.no_grad()
@@ -172,6 +177,8 @@ def main():
     parser.add_argument("--use-diff-attn", action="store_true")
     parser.add_argument("--use-mhc", action="store_true")
     parser.add_argument("--n-streams", type=int, default=2)
+    parser.add_argument("--use-xsa", action="store_true")
+
 
     # Eval config
     parser.add_argument("--micro-batch-size", type=int, default=16)
@@ -200,9 +207,12 @@ def main():
         tie_weights=True,
         use_qk_norm=args.use_qk_norm,
         use_diff_attn=args.use_diff_attn,
+        use_xsa=args.use_xsa,
         use_mhc=args.use_mhc,
         n_streams=args.n_streams,
     )
+
+    n_params = sum(p.numel() for p in model.parameters())
 
     print("=" * 80)
     print("EVAL CONFIG")
@@ -218,6 +228,7 @@ def main():
     print(f"use_diff_attn:    {args.use_diff_attn}")
     print(f"use_mhc:          {args.use_mhc}")
     print(f"n_streams:        {args.n_streams if args.use_mhc else 'n/a'}")
+    print(f"Parameters:       {n_params:,}")
     print("=" * 80)
 
     model = GPT(model_config).to(device)
