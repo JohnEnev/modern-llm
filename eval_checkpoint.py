@@ -30,6 +30,7 @@ from src.model.gpt import GPT, GPTConfig
 from src.data.dataset import PretrainDataset
 from src.model.attention import DifferentialAttention
 from src.model.mhc import MHCResidual
+from src.model.attention import MultiHeadAttention
 
 
 def clean_state_dict(state_dict):
@@ -234,6 +235,9 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters:       {n_params:,}")
 
+    xsa_on = sum(1 for b in model.blocks
+                 if isinstance(b.attention, MultiHeadAttention) and b.attention.use_xsa)
+    print(f"XSA active in:    {xsa_on}/{len(model.blocks)} blocks")
     print("Loading checkpoint...")
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
 
