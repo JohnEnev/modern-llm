@@ -21,6 +21,8 @@ from src.model.attention import DifferentialAttention
 from src.model.mhc import MHCResidual
 import ddp_utils
 
+from contextlib import nullcontext
+
 torch.set_float32_matmul_precision('high')
 
 try:
@@ -453,11 +455,23 @@ def train(config: TrainConfig):
             batch_inputs = batch_inputs.to(device)
             batch_targets = batch_targets.to(device)
 
-            with torch.autocast(device_type="cuda", dtype=dtype):
-                _, loss = model(batch_inputs, batch_targets)
+            # DDP all-reduces gradients on every backward by default. During
+            # accumulation only the LAST micro-step needs to sync; the earlier
+            # ones just add to the local grad buffer. no_sync() skips the
+            # all-reduce on all but the final micro-step.
+            is_last_micro = (micro_step == config.grad_accum_steps - 1)
+            sync_ctx = (
+                model.no_sync()
+                if (world_size > 1 and not is_last_micro)
+                else nullcontext()
+            )
+            with sync_ctx:
+                with torch.autocast(device_type="cuda", dtype=dtype):
+                    _, loss = model(batch_inputs, batch_targets)
 
-            loss = loss / config.grad_accum_steps
-            loss.backward()
+                loss = loss / config.grad_accum_steps
+                loss.backward()
+                
             running_loss += loss.item()
 
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
