@@ -272,8 +272,10 @@ def main():
     # isn't a meaningful before/after. Base models still get harness-scored below.
     if not args.skip_gen:
         print(f"\n{'#'*70}\n# BEFORE / AFTER GENERATIONS (greedy)\n{'#'*70}")
-        for name in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo",
-                     "v3_sft", "v3_grpo"):
+        gen_models = ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo", "v3_sft", "v3_grpo")
+        if args.only:
+            gen_models = tuple(n for n in gen_models if n in args.only)
+        for name in gen_models:
             spec = CHECKPOINTS[name]
             print(f"\n----- {name} -----")
             load_kwargs = dict(spec["arch"])
