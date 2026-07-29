@@ -30,6 +30,7 @@ from lm_eval.api.model import LM
 from lm_eval.api.instance import Instance
 
 from src.model.gpt import GPT, GPTConfig
+from src.model.attention import MultiHeadAttention
 
 
 # ---------------------------------------------------------------------------
@@ -96,10 +97,23 @@ def build_eval_model(
         state_key = "ema"
     else:
         raise KeyError("Checkpoint has neither 'model_weights' nor 'ema'")
-    state_dict = {k.replace("_orig_mod.", ""): v for k, v in ckpt[state_key].items()}
-    model.load_state_dict(state_dict)
+    def _clean(state_dict):
+        out = {}
+        for k, v in state_dict.items():
+            while k.startswith("_orig_mod.") or k.startswith("module."):
+                k = k.replace("_orig_mod.", "", 1).replace("module.", "", 1)
+            out[k] = v
+        return out
+
+    state_dict = _clean(ckpt[state_key])
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
     model.to(device)
+
+    xsa_on = sum(1 for b in model.blocks
+                 if isinstance(b.attention, MultiHeadAttention) and b.attention.use_xsa)
+    print(f"  XSA active in: {xsa_on}/{len(model.blocks)} blocks")
+
     return model
 
 # ---------------------------------------------------------------------------

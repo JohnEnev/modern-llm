@@ -55,6 +55,11 @@ V2_ARCH = dict(
     use_qk_norm=True, use_diff_attn=True, use_xsa=False,
 )
 
+V3_ARCH = dict(
+    d_model=1536, n_layers=24, n_heads=12, n_kv_heads=3,   # GQA 4:1
+    use_qk_norm=True, use_diff_attn=False, use_xsa=True,
+)
+
 # NOTE: confirm the two base paths below — I don't have them from you, these are
 # guesses based on the naming of the other checkpoints. The base checkpoints are
 # the pretrain outputs (pre-SFT). V2's pretrain saved an EMA copy, so use_ema=True
@@ -68,6 +73,9 @@ CHECKPOINTS = {
     "v2_base": dict(path="/workspace/checkpoints_v2/step_020000.pt",            arch=V2_ARCH, use_ema=True),
     "v2_sft":  dict(path="/workspace/checkpoints_sft_v2/sft_final_v2.pt",                       arch=V2_ARCH),
     "v2_grpo": dict(path="/workspace/checkpoints_grpo_v2/percentage/grpo_final_percentage.pt",  arch=V2_ARCH),
+    "v3_base": dict(path="/workspace/checkpoints_v3_700m_xsa_30b/step_028610.pt", arch=V3_ARCH, use_ema=True),
+    "v3_sft":  dict(path="/workspace/checkpoints_sft_v3/sft_final_v3.pt",          arch=V3_ARCH),
+    "v3_grpo": dict(path="/workspace/checkpoints_grpo_v3/percentage/grpo_final_percentage.pt", arch=V3_ARCH),
 }
 
 ZERO_SHOT_TASKS = ["lambada_openai", "hellaswag", "arc_easy", "arc_challenge",
@@ -264,7 +272,8 @@ def main():
     # isn't a meaningful before/after. Base models still get harness-scored below.
     if not args.skip_gen:
         print(f"\n{'#'*70}\n# BEFORE / AFTER GENERATIONS (greedy)\n{'#'*70}")
-        for name in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo"):
+        for name in ("v1_sft", "v1_grpo", "v2_sft", "v2_grpo",
+                     "v3_sft", "v3_grpo"):
             spec = CHECKPOINTS[name]
             print(f"\n----- {name} -----")
             load_kwargs = dict(spec["arch"])
@@ -305,7 +314,8 @@ def main():
     if results or refs:
         all_tasks = ZERO_SHOT_TASKS + ["gsm8k"]
         mine = [m for m in ("v1_base", "v1_sft", "v1_grpo",
-                            "v2_base", "v2_sft", "v2_grpo") if m in results]
+                            "v2_base", "v2_sft", "v2_grpo",
+                            "v3_base", "v3_sft", "v3_grpo") if m in results]
         col = lambda s: f"{str(s):>12}"
 
         header_cols = list(mine)
