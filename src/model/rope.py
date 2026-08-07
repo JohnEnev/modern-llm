@@ -82,13 +82,13 @@ class RoPECache:
             self.max_seq_len = seq_len
         return self.cos_f[:seq_len], self.sin_f[:seq_len]
 
-    def get_freqs_offset(self, start: int, seq_length: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def get_freqs_offset(self, start: int, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Freqs for positions [start, start+seq_length).
 
         Used in cached decode, where the new token(s) sit at absolute positions
         starting at `start` (the current cache length), not at 0.
         """
-        end = start + seq_length
+        end = start + seq_len
         assert end <= self.max_seq_len, (
             f"position {end} exceeds RoPE table ({self.max_seq_len}); "
             f"sequence longer than the model's context window"

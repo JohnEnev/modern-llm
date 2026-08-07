@@ -46,16 +46,21 @@ class MultiHeadAttention(nn.Module):
         if use_qk_norm:
             self.qk_scale = nn.Parameter(torch.ones(n_heads) * (self.d_k ** 0.5))
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None, past_kv: tuple[torch.Tensor, torch.Tensor] = None, use_cache: bool = False) -> torch.Tensor:
         """
         Args:
             x: Input tensor of shape [batch, seq_len, d_model]
             mask: Optional attention mask (not used if using F.scaled_dot_product_attention with is_causal)
+            past_kv: (k_cached, v_cached) for THIS layer, each [B, T_past, n_kv_heads, d_k],
+                RoPE already applied to k_cached, NOT gqa-expanded. Or None.
+            use_cache: Boolean
 
         Returns:
-            Output tensor of shape [batch, seq_len, d_model]
+            (output, new_kv), where Output tensor of shape [batch, seq_len, d_model]
+            and new_kv is (k, v) unexpanded, to store back.
         """
         batch_size, seq_len, d_model = x.shape
+        past_len = 0 if past_kv is None else past_kv[0].shape[1]
 
         # Step 1 - project to Q, K, V
         q = self.W_q(x) # [batch, seq_len, d_model]
@@ -73,11 +78,25 @@ class MultiHeadAttention(nn.Module):
             k = F.normalize(k, dim=-1)
 
         # Step 3 - Apply RoPE to q and k
-        freqs = self.rope_cache.get_freqs(seq_len)
+        # No cache -> positions 0..seq_len-1
+        # Cache -> positions past_len..past_len+seq_len-1  (get_freqs_offset)
+        if past_kv is not None:
+            freqs = self.rope_cache.get_freqs_offset(start=past_len, seq_len=seq_len)
+        else:
+            freqs = self.rope_cache.get_freqs(seq_len)
         q = apply_rope(q, freqs)
         k = apply_rope(k, freqs)
 
-        # Step 3.b - if GQA, expand K and V. Apply on the 3rd dim
+        # Step 3.b - KV Cache
+        if past_kv is not None:
+            k = torch.cat([past_kv[0], k], dim=1)
+            v = torch.cat([past_kv[1], v], dim=1)
+        if use_cache:
+            new_kv = (k, v)
+        else:
+            new_kv = None
+
+        # Step 3.c - if GQA, expand K and V. Apply on the 3rd dim
         if self.n_rep > 1:
             k = k.repeat_interleave(self.n_rep, dim=2)
             v = v.repeat_interleave(self.n_rep, dim=2)
@@ -88,12 +107,14 @@ class MultiHeadAttention(nn.Module):
         v = v.transpose(1, 2) # [batch, n_heads, seq_len, d_k]
 
         # Step 5 - Compute attention using Flash Attention
+        is_decode = (seq_len == 1) # decode = single new token
+
         if self.use_flash:
             attn_output = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True, # Automatically applies causal mask,
+                is_causal=True if not is_decode else False, # Automatically applies causal mask if prefill
                 scale=1.0 if self.use_qk_norm else None,
             )
         else:
@@ -101,10 +122,11 @@ class MultiHeadAttention(nn.Module):
             scale = 1.0 if self.use_qk_norm else (self.d_k ** -0.5)
             attn_scores = torch.matmul(q, k.transpose(-2, -1)) * scale # [batch, n_heads, seq_len, d_k] @ [batch, n_heads, d_k, seq_len] -> [batch, n_heads, seq_len, seq_len]
 
-            causal_mask = torch.triu(
-                torch.full((seq_len, seq_len), float('-inf'), device=x.device), diagonal=1
-            )
-            attn_scores = attn_scores + causal_mask # Broadcasting will apply mask to all batches and heads
+            if not is_decode:
+                causal_mask = torch.triu(
+                    torch.full((seq_len, seq_len), float('-inf'), device=x.device), diagonal=1
+                )
+                attn_scores = attn_scores + causal_mask # Broadcasting will apply mask to all batches and heads
             attn_weights = F.softmax(attn_scores, dim=-1) # [batch, n_heads, seq_len, seq_len]
             if self.attn_dropout is not None:
                 attn_weights = self.attn_dropout(attn_weights)
@@ -115,10 +137,14 @@ class MultiHeadAttention(nn.Module):
         # attn_output and v are both [batch, n_heads, seq_len, d_k] here.
         # v was already GQA-expanded and transposed above, so shapes align.
         if self.use_xsa:
-            # projection of attn_output onto v, per (batch, head, position)
-            dot = (attn_output * v).sum(dim=-1, keepdim=True) # [batch, n_heads, seq_len, 1]
-            denom = v.pow(2).sum(dim=-1, keepdim=True).clamp_min(1e-6) # [bath, n_heads, seq_len, 1]
-            projection = (dot / denom) * v # [batch, n_heads, seq_len, d_k]
+            # XSA is per-position: use each query token's OWN value, not the whole cache.
+            # In decode, attn_output is length 1 (the new token) but v spans the full
+            # cache, so take the last `q_len` positions of v to align.
+            q_len = attn_output.shape[2]
+            v_self = v[:, :, -q_len:, :]                       # [B, n_heads, q_len, d_k]
+            dot = (attn_output * v_self).sum(dim=-1, keepdim=True)
+            denom = v_self.pow(2).sum(dim=-1, keepdim=True).clamp_min(1e-6)
+            projection = (dot / denom) * v_self
             attn_output = attn_output - projection
 
         # Step 6 - Reshape back
@@ -128,7 +154,7 @@ class MultiHeadAttention(nn.Module):
         # Step 7 - Apply output projection
         output = self.W_o(attn_output)
 
-        return output
+        return output, new_kv
 
 
 class DifferentialAttention(nn.Module):

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .block import TransformerBlock
 from .rmsnorm import RMSNorm
+from .kv_cache import KVCache
 
 class GPTConfig:
     """Configuration for GPT model"""
@@ -117,7 +118,9 @@ class GPT(nn.Module):
     def forward(
             self,
             input_ids: torch.Tensor,
-            targets: torch.Tensor = None
+            targets: torch.Tensor = None,
+            cache: torch.Tensor = None,
+            use_cache: bool = False
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Forward pass through the model.
@@ -143,15 +146,30 @@ class GPT(nn.Module):
             streams = x.unsqueeze(0).repeat(self.config.n_streams, 1, 1, 1)
             
             for block in self.blocks:
-                streams = block(streams)
+                streams, _ = block(streams)
             
             # Learned final readout over streams
             read_weights = F.softmax(self.final_read_logits, dim=0)
             x = torch.einsum('s,sbtd->btd', read_weights, streams)
 
         else:
-            for block in self.blocks:
-                x = block(x) # [batch, seq_len, d_model]
+            for layer_idx, block in enumerate(self.blocks):
+                # Pull this layer's cached KV out of the cache, if any
+                if cache is not None and cache.k_cache[layer_idx] is not None:
+                    past_kv = (cache.k_cache[layer_idx], cache.v_cache[layer_idx])
+                else:
+                    past_kv = None
+                x, new_kv = block(x, past_kv=past_kv, use_cache=use_cache) # [batch, seq_len, d_model]
+
+                # attention already concatenated past+new, so new_kv is the full
+                # cache for this layer. Write it straight back.
+                if use_cache and cache is not None:
+                    cache.k_cache[layer_idx] = new_kv[0]
+                    cache.v_cache[layer_idx] = new_kv[1]
+
+            # Bump length once per step, after all the layers, by the new token count
+            if use_cache and cache is not None:
+                cache.length += input_ids.shape[1]
 
         # Step 4 - Final RMSNorm
         x = self.norm(x) # [batch, seq_len, d_model]
@@ -214,7 +232,123 @@ class GPT(nn.Module):
             # Append to input_ids
             input_ids = torch.cat([input_ids, next_token], dim=-1) # [batch, seq_len + 1]
         return input_ids
-        
+
+
+    @torch.no_grad()
+    def generate_cached(
+        self,
+        input_ids: torch.Tensor,       # [batch, prompt_len]
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+    ) -> torch.Tensor:
+        """
+        Autoregressive generation using the KV cache.
+
+        Two phases:
+        - prefill: run the whole prompt once, filling the cache.
+        - decode:  feed one token at a time; the cache supplies the past.
+
+        Returns the full sequence [batch, prompt_len + max_new_tokens].
+        """
+        self.eval()
+
+        cache = KVCache(self.config.n_layers)
+
+        # --- helper: sample one next token from a [batch, vocab] logits row ---
+        def sample_next(logits):
+            logits = logits / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('inf')
+
+            # Sample from the distribution
+            probs = F.softmax(logits, dim=-1) # [batch, vocab_size]
+            next_token = torch.multinomial(probs, num_samples=1) # [batch, 1]
+
+            return next_token
+
+        logits, _ = self(input_ids=input_ids, cache=cache, use_cache=True)
+        next_token = sample_next(logits[:, -1, :])   # [batch, 1]
+
+        generated = [next_token]
+
+        for _ in range(max_new_tokens - 1):
+            logits, _ = self(input_ids=next_token, cache=cache, use_cache=True) # feed next_token, not input_ids
+            next_token = sample_next(logits[:, -1, :])
+            generated.append(next_token)
+
+        generated = torch.cat(generated, dim=1)          # list of [B,1] -> [B, max_new_tokens]
+        result = torch.cat([input_ids, generated], dim=1) # [B, prompt_len + max_new_tokens]
+        return result
+
+    @torch.no_grad()
+    def generate_stream(
+        self,
+        input_ids: torch.Tensor, # [1, prompt_len] (streaming assumes batch=1)
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        eos_token: int | None = None,
+    ):
+        """
+        Streaming generation: yield one token id at a time as it's 
+        produced (versus all response in one go).
+
+        Same prefill/decode as generate_cached(), but instead of collecting 
+        tokens and returning them at the end, it yields each token the moment
+        it's sampled, so a caller (eg. API) can send it to user immediately.
+
+        Yields:
+            int: the next token_id, one per decode step.
+        """
+
+        self.eval()
+        # One cache for this whole generation. Persists across every step below.
+        # Holds K/V for all n_layers. Created here, lives until the generator ends.
+    
+        cache = KVCache(self.config.n_layers)
+
+        def sample_next(logits):
+            # identical to generate_cached()
+            # logits in: [1, vocab_size]  (already the last position's row) - would be [batch, vocab_size] if not streaming
+            logits = logits / temperature # [1, vocab] — sharpen/flatten the distribution
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1))) # v: [1, top_k], the top_k largest logits
+                logits[logits < v[:, [-1]]] = -float('inf') # mask everything below the k-th largest to -inf
+
+            # Sample from the distribution 
+            probs = F.softmax(logits, dim=-1) # [1, vocab_size] — now a probability distribution
+            return torch.multinomial(probs, num_samples=1) # [1, 1] — one sampled token id
+
+        # PREFILL
+        # input_ids: [1, prompt_len]. One parallel pass over the whole prompt.
+        # Fills the cache with the prompt's K/V. logits: [1, prompt_len, vocab].    
+        logits, _ = self(input_ids=input_ids, cache=cache, use_cache=True)
+        # logits[:, -1, :] is [1, vocab]: the prediction AFTER the last prompt token,
+        # i.e. the first token of the answer.
+        next_token = sample_next(logits[:, -1, :]) # [1, 1]
+        # .item() pulls the scalar out of the [1,1] tensor -> plain Python int.
+        # The caller detokenizes and sends this to the user immediately.
+        yield next_token.item() # int
+
+        if eos_token is not None and next_token.item() == eos_token:
+            return # ends the generator cleanly
+
+        # DECODE
+        # max_new_tokens - 1 because prefill already produced one token above.
+        for _ in range(max_new_tokens - 1):
+            # Feed ONLY the new token: [1, 1], not the prompt.
+            # The cache supplies all the past; the model does one token's work.
+            # logits: [1, 1, vocab] (seq_len is 1 now).
+            logits, _ = self(input_ids=next_token, cache=cache, use_cache=True)
+            # [:, -1, :] is [1, vocab] again (the only position). Sample the next token.
+            next_token = sample_next(logits[:, -1, :])
+
+            yield next_token.item()
+
+            if eos_token is not None and next_token.item() == eos_token:
+                return # ends the generator cleanly
 
     
     def count_parameters(self) -> dict:
@@ -419,6 +553,76 @@ def test_xsa_propagates():
     assert xsa_count == config.n_layers
     print(f"✓ use_xsa propagates to all {xsa_count} attention modules")
 
+@torch.no_grad()
+def test_cache_equivalence(seq_len=16, tol=1e-4):
+    """Full-sequence forward vs token-by-token cached forward: logits must match."""
+    torch.manual_seed(0)
+    config = GPTConfig(
+        vocab_size=1000, d_model=256, n_layers=4, n_heads=8, n_kv_heads=2,
+        dropout=0.0, max_seq_len=128, use_flash=True, tie_weights=True,
+        use_qk_norm=True, use_diff_attn=False, use_xsa=True, use_mhc=False,
+    )
+    model = GPT(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, seq_len))
+
+    # Path A: whole sequence in one pass, no cache
+    full_logits, _ = model(ids)                      # [1, seq_len, vocab]
+
+    # Path B: prefill first token, then decode the rest one at a time
+    cache = KVCache(config.n_layers)
+    step, _ = model(ids[:, :1], cache=cache, use_cache=True)   # prefill 1 token
+    collected = [step[:, -1, :]]
+    for t in range(1, seq_len):
+        step, _ = model(ids[:, t:t+1], cache=cache, use_cache=True)  # decode 1
+        collected.append(step[:, -1, :])
+    cached_logits = torch.stack(collected, dim=1)    # [1, seq_len, vocab]
+
+    max_diff = (full_logits - cached_logits).abs().max().item()
+    print(f"max diff: {max_diff:.2e}")
+    assert max_diff < tol, f"CACHE MISMATCH: {max_diff:.2e}"
+    print("✓ cache equivalence passed")
+
+def repl_test():
+    torch.manual_seed(0)
+    config = GPTConfig(
+        vocab_size=1000, d_model=256, n_layers=4, n_heads=8, n_kv_heads=2,
+        dropout=0.0, max_seq_len=128, use_flash=True, tie_weights=True,
+        use_qk_norm=True, use_diff_attn=False, use_xsa=True, use_mhc=False,
+    )
+    model = GPT(config)
+    model.eval()
+    ids = torch.randint(0, config.vocab_size, (1, 5))
+
+    # 1. count: max_new_tokens=10 should yield exactly 10 (no eos set)
+    toks = list(model.generate_stream(ids, max_new_tokens=10))
+    assert len(toks) == 10, f"expected 10 tokens, got {len(toks)}"
+    assert all(isinstance(t, int) for t in toks), "tokens must be plain ints"
+    assert all(0 <= t < config.vocab_size for t in toks), "token id out of range"
+    print(f"✓ streamed {len(toks)} tokens, all valid ids: {toks}")
+
+    # 2. eos stops early: force eos to be the very next token the model will pick
+    #    by seeding identically and reading what token 1 is, then asserting the
+    #    stream stops at it.
+    torch.manual_seed(0)
+    first = next(model.generate_stream(ids, max_new_tokens=10))
+    print(first)
+    torch.manual_seed(0)
+    stopped = list(model.generate_stream(ids, max_new_tokens=10, eos_token=first))
+    print(stopped)
+    assert len(stopped) == 1, f"eos should stop after 1 token, got {len(stopped)}"
+    print(f"✓ eos stops early: yielded {stopped}")
+
+    # 3. streaming matches generate_cached exactly (same seed => same tokens)
+    torch.manual_seed(0)
+    stream_toks = list(model.generate_stream(ids, max_new_tokens=8))
+    torch.manual_seed(0)
+    cached = model.generate_cached(ids, max_new_tokens=8)
+    cached_toks = cached[0, ids.shape[1]:].tolist()   # drop the prompt
+    assert stream_toks == cached_toks, f"stream {stream_toks} != cached {cached_toks}"
+    print("✓ streaming matches generate_cached token-for-token")
+
 
 def run_all_tests():
     """Run all GPT tests."""
@@ -439,4 +643,6 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
-    run_all_tests()
+    #run_all_tests()
+    #test_cache_equivalence()
+    repl_test()

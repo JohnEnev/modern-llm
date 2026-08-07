@@ -98,7 +98,7 @@ class TransformerBlock(nn.Module):
                 write_init=1.0,
             )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, past_kv: tuple[torch.Tensor, torch.Tensor] = None, use_cache: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass through transformer block.
         
@@ -110,11 +110,12 @@ class TransformerBlock(nn.Module):
         """
         if not self.use_mhc:
             # First path through attention: residual connection + attention of normed input
-            x = x + self.attention(self.norm1(x))
+            attn_out, new_kv = self.attention(x=self.norm1(x), past_kv=past_kv, use_cache=use_cache)
+            x = x + attn_out    
             # Second path through MLP: residual connection + SwiGLU of normed output of first path
             x = x + self.mlp(self.norm2(x))
         
-            return x
+            return x, new_kv
         
         else:
             # in mHC mode, x is actually streams: [S, B, T, D]
@@ -122,7 +123,7 @@ class TransformerBlock(nn.Module):
             streams = self.mhc_attn(streams, self.attention, self.norm1)
             streams = self.mhc_mlp(streams, self.mlp, self.norm2)
 
-            return streams
+            return streams, None
 
 
 
