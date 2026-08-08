@@ -584,6 +584,35 @@ def test_cache_equivalence(seq_len=16, tol=1e-4):
     assert max_diff < tol, f"CACHE MISMATCH: {max_diff:.2e}"
     print("✓ cache equivalence passed")
 
+@torch.no_grad()
+def test_cache_equivalence_diffattn(seq_len=16, tol=1e-4):
+    """Same gate as the XSA test, but for the DiffAttn path."""
+    torch.manual_seed(0)
+    config = GPTConfig(
+        vocab_size=1000, d_model=256, n_layers=4, n_heads=8, n_kv_heads=2,
+        dropout=0.0, max_seq_len=128, use_flash=True, tie_weights=True,
+        use_qk_norm=True, use_diff_attn=True, use_xsa=False, use_mhc=False,
+    )
+    model = GPT(config)
+    model.eval()
+
+    ids = torch.randint(0, config.vocab_size, (1, seq_len))
+
+    full_logits, _ = model(ids)                       # path A: full forward
+
+    cache = KVCache(config.n_layers)                  # path B: prefill + decode
+    step, _ = model(ids[:, :1], cache=cache, use_cache=True)
+    collected = [step[:, -1, :]]
+    for t in range(1, seq_len):
+        step, _ = model(ids[:, t:t+1], cache=cache, use_cache=True)
+        collected.append(step[:, -1, :])
+    cached_logits = torch.stack(collected, dim=1)
+
+    max_diff = (full_logits - cached_logits).abs().max().item()
+    print(f"diffattn max diff: {max_diff:.2e}")
+    assert max_diff < tol, f"DIFFATTN CACHE MISMATCH: {max_diff:.2e}"
+    print("✓ diffattn cache equivalence passed")
+
 def repl_test():
     torch.manual_seed(0)
     config = GPTConfig(
@@ -644,5 +673,6 @@ def run_all_tests():
 
 if __name__ == "__main__":
     #run_all_tests()
-    #test_cache_equivalence()
-    repl_test()
+    test_cache_equivalence()
+    test_cache_equivalence_diffattn()
+    #repl_test()

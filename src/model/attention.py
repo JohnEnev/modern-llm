@@ -217,8 +217,9 @@ class DifferentialAttention(nn.Module):
             + self.lambda_init
         )
     
-    def forward(self, x: torch.Tensor, mask=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask=None, past_kv: tuple[torch.Tensor, torch.Tensor] = None, use_cache: bool = False) -> torch.Tensor:
         batch_size, seq_len, _ = x.shape
+        past_len = 0 if past_kv is None else past_kv[0].shape[1]
         
         # Project to Q, K, V
         q = self.W_q(x) # [batch, seq_len, d_model]
@@ -242,12 +243,32 @@ class DifferentialAttention(nn.Module):
             k1 = F.normalize(k1, dim=-1)
             k2 = F.normalize(k2, dim=-1)
         
-        # RoPE on each half
-        freqs = self.rope_cache.get_freqs(seq_len)
+        # RoPE on each half - take into account KV Cache
+        if past_kv is not None:
+            freqs = self.rope_cache.get_freqs_offset(start=past_len, seq_len=seq_len)
+        else:
+            freqs = self.rope_cache.get_freqs(seq_len)
         q1 = apply_rope(q1, freqs)
         q2 = apply_rope(q2, freqs)
         k1 = apply_rope(k1, freqs)
         k2 = apply_rope(k2, freqs)
+
+        # Reassemble the two post-RoPE key halves into one K
+        k_full_new = torch.cat([k1, k2], dim=-1) # [B, seq, n_kv, d_k]
+
+        # Concact the past K and V to new K and V and save to new cache.
+        if past_kv is not None:
+            k_full = torch.cat([past_kv[0], k_full_new], dim=1) # concat on the seq dim (past and new are along seq dim)
+            v = torch.cat([past_kv[1], v], dim=1) # concat on the seq dim (past and new are along seq dim)
+        else:
+            k_full = k_full_new
+
+        if use_cache:
+            new_kv = (k_full, v)
+        else:
+            new_kv = None
+
+        k1, k2 = k_full.chunk(2, dim=-1)
         
         # GQA expansion — repeat k1, k2, v from n_kv_heads to n_heads
         if self.n_rep > 1:
@@ -264,11 +285,13 @@ class DifferentialAttention(nn.Module):
         lam = self.compute_lambda().to(dtype=v.dtype)
         
         # Two attention outputs using Flash Attention for speedup
+        is_decode = (seq_len == 1)
+
         attn1_output = F.scaled_dot_product_attention(
             q1, k1, v,
             attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True, # Automatically applies causal mask,
+            is_causal=False if is_decode else True, # Applies causal mask if prefill, not if decode
             scale=1.0 if self.use_qk_norm else (self.d_k_half ** -0.5),
         )
 
@@ -276,7 +299,7 @@ class DifferentialAttention(nn.Module):
             q2, k2, v,
             attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True, # Automatically applies causal mask,
+            is_causal=False if is_decode else True, # Applies causal mask if prefill, not if decode
             scale=1.0 if self.use_qk_norm else (self.d_k_half ** -0.5),
         )
         # Apply to V, reshape, RMSNorm, output
@@ -286,7 +309,7 @@ class DifferentialAttention(nn.Module):
         scale_factor = (1 - self.lambda_init).to(dtype=attn_output.dtype)
         attn_output = attn_output * scale_factor
         attn_output = attn_output.contiguous().view(batch_size, seq_len, self.d_model)
-        return self.W_o(attn_output)
+        return self.W_o(attn_output), new_kv
 
 
 # TESTS SECTION
